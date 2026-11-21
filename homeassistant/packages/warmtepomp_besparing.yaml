@@ -1,0 +1,229 @@
+# packages/warmtepomp_besparing.yaml
+# Besparing door verwarmen met de Elga Ace in plaats van de Tzerra.
+#
+#   besparing = vermeden gas  × gasprijs  −  stroom WP × stroomprijs
+#   vermeden gas (m³) = (gemeten WP-warmte − ontdooiwarmte) / (calorische waarde × ketelrendement)
+#
+# Vereist:
+#   - /config/custom_templates/warmtepomp.jinja
+#   - package warmtepomp_cop.yaml (input_number.gas_calorische_waarde, cv_rendement)
+#   - ESPHome elga-ace-cop (sensor.elga_ace_cop_warmtepomp_warmte)
+#
+# Prijzen komen uit de centrale UI-helpers. 'Nu' rekent met de actuele prijs;
+# vandaag / maand / seizoen / totaal worden in stapjes opgebouwd met de prijs
+# van dat moment (een prijswijziging werkt niet met terugwerkende kracht):
+#   input_number.stroomprijs_huidig_tarief  (€/kWh)
+#   input_number.gasprijs_per_m3            (€/m³)
+
+input_button:
+  reset_besparing:
+    name: Reset besparing warmtepomp
+    icon: mdi:piggy-bank-outline
+
+# Eigen tellers, zodat warmte en stroom vanaf hetzelfde moment tellen.
+# Na het inbouwen van de meetset één keer op 0 zetten (utility_meter.reset).
+utility_meter:
+  besparing_wp_warmte_dag:
+    unique_id: besparing_wp_warmte_dag
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+    cycle: daily
+  besparing_wp_warmte_maand:
+    unique_id: besparing_wp_warmte_maand
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+    cycle: monthly
+  besparing_wp_warmte_seizoen:
+    unique_id: besparing_wp_warmte_seizoen
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+    cron: "0 0 1 9 *"
+  besparing_wp_warmte_totaal:
+    unique_id: besparing_wp_warmte_totaal
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+  besparing_wp_ontdooi_dag:
+    unique_id: besparing_wp_ontdooi_dag
+    source: sensor.elga_ace_cop_ontdooi_warmte
+    cycle: daily
+  besparing_wp_ontdooi_maand:
+    unique_id: besparing_wp_ontdooi_maand
+    source: sensor.elga_ace_cop_ontdooi_warmte
+    cycle: monthly
+  besparing_wp_ontdooi_seizoen:
+    unique_id: besparing_wp_ontdooi_seizoen
+    source: sensor.elga_ace_cop_ontdooi_warmte
+    cron: "0 0 1 9 *"
+  besparing_wp_ontdooi_totaal:
+    unique_id: besparing_wp_ontdooi_totaal
+    source: sensor.elga_ace_cop_ontdooi_warmte
+  besparing_wp_stroom_dag:
+    unique_id: besparing_wp_stroom_dag
+    source: sensor.warmtepomp_energy_import
+    cycle: daily
+  besparing_wp_stroom_maand:
+    unique_id: besparing_wp_stroom_maand
+    source: sensor.warmtepomp_energy_import
+    cycle: monthly
+  besparing_wp_stroom_seizoen:
+    unique_id: besparing_wp_stroom_seizoen
+    source: sensor.warmtepomp_energy_import
+    cron: "0 0 1 9 *"
+  besparing_wp_stroom_totaal:
+    unique_id: besparing_wp_stroom_totaal
+    source: sensor.warmtepomp_energy_import
+
+template:
+  - sensor:
+      - name: "Besparing warmtepomp nu"
+        unique_id: besparing_warmtepomp_nu
+        unit_of_measurement: EUR/h
+        state_class: measurement
+        icon: mdi:cash-fast
+        state: >
+          {% from 'warmtepomp.jinja' import besparing %}
+          {{ besparing(states('sensor.elga_ace_cop_warmtepomp_thermisch_vermogen') | float(0) - states('sensor.elga_ace_cop_ontdooi_vermogen') | float(0),
+                       states('sensor.warmtepomp_power') | float(0) / 1000) }}
+        availability: >
+          {{ has_value('input_number.gasprijs_per_m3') and has_value('input_number.stroomprijs_huidig_tarief')
+             and has_value('sensor.elga_ace_cop_warmtepomp_thermisch_vermogen')
+             and has_value('sensor.warmtepomp_power') }}
+
+  # -------------------------------------------------------------------
+  # Besparing in euro's, OPGEBOUWD IN STAPJES. Elke verandering van de
+  # warmte-, ontdooi- of stroomteller wordt afgerekend met de prijzen
+  # van DAT moment. Een prijswijziging geldt dus vanaf dat moment en
+  # werkt niet met terugwerkende kracht.
+  #
+  # De vorige tellerstanden staan als attributen (w_vorig, o_vorig,
+  # s_vorig) op 'Besparing warmtepomp totaal'.
+  # Eerste start: vandaag/maand/seizoen/totaal beginnen op de waarde van
+  # de oude formule (opgeteld × huidige prijs); daarna alleen stapjes.
+  # -------------------------------------------------------------------
+  - triggers:
+      - trigger: state
+        entity_id:
+          - sensor.besparing_wp_warmte_totaal
+          - sensor.besparing_wp_ontdooi_totaal
+          - sensor.besparing_wp_stroom_totaal
+        not_to: ["unavailable", "unknown"]
+        id: stap
+      - trigger: time
+        at: "00:00:05"
+        id: tijd
+      - trigger: state
+        entity_id: input_button.reset_besparing
+        not_to: ["unavailable", "unknown"]
+        id: reset
+    variables:
+      bron_ok: >
+        {{ has_value('sensor.besparing_wp_warmte_totaal')
+           and has_value('sensor.besparing_wp_stroom_totaal')
+           and has_value('input_number.gasprijs_per_m3')
+           and has_value('input_number.stroomprijs_huidig_tarief') }}
+      w: "{{ states('sensor.besparing_wp_warmte_totaal') | float(0) }}"
+      o: "{{ states('sensor.besparing_wp_ontdooi_totaal') | float(0) }}"
+      s: "{{ states('sensor.besparing_wp_stroom_totaal') | float(0) }}"
+      wv: "{{ state_attr('sensor.besparing_warmtepomp_totaal', 'w_vorig') }}"
+      ov: "{{ state_attr('sensor.besparing_warmtepomp_totaal', 'o_vorig') }}"
+      sv: "{{ state_attr('sensor.besparing_warmtepomp_totaal', 's_vorig') }}"
+      eerste: "{{ wv is none or sv is none }}"
+      gp: "{{ states('input_number.gasprijs_per_m3') | float(0) }}"
+      sp: "{{ states('input_number.stroomprijs_huidig_tarief') | float(0) }}"
+      kwh_m3: >
+        {{ states('input_number.gas_calorische_waarde') | float(9.77)
+           * states('input_number.cv_rendement') | float(0.95) }}
+      # Een teller die terugloopt (reset) telt als 0, niet als negatief.
+      dw: "{{ 0 if eerste else ([w - wv | float(0), 0] | max) }}"
+      do: "{{ 0 if eerste or ov is none else ([o - ov | float(0), 0] | max) }}"
+      ds: "{{ 0 if eerste else ([s - sv | float(0), 0] | max) }}"
+      stap: "{{ (dw - do) / kwh_m3 * gp - ds * sp }}"
+      dag: "{{ now().date() | string }}"
+      maand: "{{ now().strftime('%Y-%m') }}"
+      # Als "2026/2027" (tekst), zodat HA er geen getal van maakt.
+      seizoen: >
+        {% set j = now().year if now().month >= 9 else now().year - 1 %}{{ j }}/{{ j + 1 }}
+    sensor:
+      - name: "Besparing warmtepomp totaal"
+        unique_id: besparing_warmtepomp_totaal
+        unit_of_measurement: EUR
+        device_class: monetary
+        state_class: total
+        icon: mdi:piggy-bank
+        state: >
+          {% set oud = this.state | float(none) %}
+          {% if trigger.id == 'reset' %}0
+          {% elif not bron_ok %}{{ oud if oud is not none else 0 }}
+          {% elif eerste or oud is none %}
+            {%- from 'warmtepomp.jinja' import besparing -%}
+            {{ besparing(w - o, s) }}
+          {% else %}{{ (oud + stap) | round(4) }}{% endif %}
+        attributes:
+          w_vorig: "{{ w if bron_ok or trigger.id == 'reset' else wv }}"
+          o_vorig: "{{ o if bron_ok or trigger.id == 'reset' else ov }}"
+          s_vorig: "{{ s if bron_ok or trigger.id == 'reset' else sv }}"
+          gasprijs: "{{ gp }}"
+          stroomprijs: "{{ sp }}"
+          vermeden_gas_m3: "{{ ((w - o) / kwh_m3) | round(1) }}"
+          stroom_kwh: "{{ s | round(1) }}"
+
+      - name: "Besparing warmtepomp vandaag"
+        unique_id: besparing_warmtepomp_vandaag
+        unit_of_measurement: EUR
+        device_class: monetary
+        icon: mdi:cash
+        state: >
+          {% set oud = this.state | float(none) %}
+          {% if trigger.id == 'reset' %}0
+          {% elif not bron_ok %}{{ oud if oud is not none else 0 }}
+          {% elif eerste or oud is none %}
+            {%- from 'warmtepomp.jinja' import besparing -%}
+            {{ besparing(states('sensor.besparing_wp_warmte_dag') | float(0)
+                         - states('sensor.besparing_wp_ontdooi_dag') | float(0),
+                         states('sensor.besparing_wp_stroom_dag')) }}
+          {% elif this.attributes.get('periode') != dag %}{{ stap | round(4) }}
+          {% else %}{{ (oud + stap) | round(4) }}{% endif %}
+        attributes:
+          periode: "{{ dag }}"
+
+      - name: "Besparing warmtepomp deze maand"
+        unique_id: besparing_warmtepomp_maand
+        unit_of_measurement: EUR
+        device_class: monetary
+        icon: mdi:cash-multiple
+        state: >
+          {% set oud = this.state | float(none) %}
+          {% if trigger.id == 'reset' %}0
+          {% elif not bron_ok %}{{ oud if oud is not none else 0 }}
+          {% elif eerste or oud is none %}
+            {%- from 'warmtepomp.jinja' import besparing -%}
+            {{ besparing(states('sensor.besparing_wp_warmte_maand') | float(0)
+                         - states('sensor.besparing_wp_ontdooi_maand') | float(0),
+                         states('sensor.besparing_wp_stroom_maand')) }}
+          {% elif this.attributes.get('periode') != maand %}{{ stap | round(4) }}
+          {% else %}{{ (oud + stap) | round(4) }}{% endif %}
+        attributes:
+          periode: "{{ maand }}"
+          vermeden_gas_m3: >
+            {{ ((states('sensor.besparing_wp_warmte_maand') | float(0)
+                 - states('sensor.besparing_wp_ontdooi_maand') | float(0)) / kwh_m3) | round(1) }}
+          stroom_kwh: "{{ states('sensor.besparing_wp_stroom_maand') | float(0) | round(1) }}"
+
+      - name: "Besparing warmtepomp seizoen"
+        unique_id: besparing_warmtepomp_seizoen
+        unit_of_measurement: EUR
+        device_class: monetary
+        icon: mdi:cash-multiple
+        state: >
+          {% set oud = this.state | float(none) %}
+          {% if trigger.id == 'reset' %}0
+          {% elif not bron_ok %}{{ oud if oud is not none else 0 }}
+          {% elif eerste or oud is none or this.attributes.get('periode') is number %}
+            {%- from 'warmtepomp.jinja' import besparing -%}
+            {{ besparing(states('sensor.besparing_wp_warmte_seizoen') | float(0)
+                         - states('sensor.besparing_wp_ontdooi_seizoen') | float(0),
+                         states('sensor.besparing_wp_stroom_seizoen')) }}
+          {% elif this.attributes.get('periode') != seizoen %}{{ stap | round(4) }}
+          {% else %}{{ (oud + stap) | round(4) }}{% endif %}
+        attributes:
+          periode: "{{ seizoen }}"
+          vermeden_gas_m3: >
+            {{ ((states('sensor.besparing_wp_warmte_seizoen') | float(0)
+                 - states('sensor.besparing_wp_ontdooi_seizoen') | float(0)) / kwh_m3) | round(1) }}
+          stroom_kwh: "{{ states('sensor.besparing_wp_stroom_seizoen') | float(0) | round(1) }}"

@@ -1,0 +1,149 @@
+# packages/warmtepomp_cop.yaml
+# Elga Ace: basis-tellers (stroom HomeWizard, gas P1), buitentemperatuur en COP per buitentemperatuur.
+# Warmte komt uit de COP-meter (ESPHome); de Remeha-vergelijking staat in warmtepomp_remeha.yaml.
+# Buitentemperatuur: Remeha-integratie (apparaat "Remeha HeatPump").
+
+input_number:
+  gas_calorische_waarde:
+    name: Gas calorische waarde
+    min: 8
+    max: 12
+    step: 0.01
+    initial: 9.77          # bovenwaarde NL aardgas
+    unit_of_measurement: kWh/m³
+    mode: box
+    icon: mdi:fire
+  cv_rendement:
+    name: Tzerra rendement
+    min: 0.70
+    max: 1.10
+    step: 0.01
+    initial: 0.95          # op bovenwaarde, HR-ketel lage temp
+    mode: box
+    icon: mdi:water-boiler
+
+input_button:
+  reset_cop_banden:
+    name: Reset COP per buitentemperatuur
+    icon: mdi:restart
+
+sensor:
+  - platform: statistics
+    name: "Buitentemperatuur gemiddeld 24u"
+    unique_id: buitentemperatuur_gemiddeld_24u
+    entity_id: sensor.remeha_heatpump_outdoor_temperature
+    state_characteristic: average_step
+    max_age:
+      hours: 24
+    sampling_size: 5000
+    keep_last_sample: true
+    precision: 1
+
+utility_meter:
+  # Stroom WP (HomeWizard)
+  wp_stroom_dag:
+    unique_id: wp_stroom_dag
+    source: sensor.warmtepomp_energy_import
+    cycle: daily
+  wp_stroom_maand:
+    unique_id: wp_stroom_maand
+    source: sensor.warmtepomp_energy_import
+    cycle: monthly
+  wp_stroom_seizoen:
+    unique_id: wp_stroom_seizoen
+    source: sensor.warmtepomp_energy_import
+    cron: "0 0 1 9 *"
+  # Gas uit de P1-meter (exact, direct). Bevat ook gas voor warm water.
+  # Vervangt de Remeha-gasteller (vertraagd, 0,01 m³, onbetrouwbaar).
+  cv_gas_p1_dag:
+    unique_id: cv_gas_p1_dag
+    source: sensor.gas_meter_gas
+    cycle: daily
+  cv_gas_p1_maand:
+    unique_id: cv_gas_p1_maand
+    source: sensor.gas_meter_gas
+    cycle: monthly
+  cv_gas_p1_seizoen:
+    unique_id: cv_gas_p1_seizoen
+    source: sensor.gas_meter_gas
+    cron: "0 0 1 9 *"
+
+template:
+  # ---------- Lopende perioden ----------
+  - sensor:
+      # Verwachte COP bij de huidige buitentemperatuur + complete curve
+      - name: "Elga Ace COP-curve"
+        unique_id: elga_ace_cop_curve
+        state_class: measurement
+        icon: mdi:chart-bell-curve
+        state: >
+          {% set b = state_attr('sensor.elga_ace_cop_per_buitentemperatuur', 'banden') or {} %}
+          {% set t = states('sensor.remeha_heatpump_outdoor_temperature') | float(0) %}
+          {% set k = ((t / 2) | round(0, 'floor') * 2) | int %}
+          {% set hit = b.items() | selectattr(0, 'in', [k, k | string]) | list %}
+          {% set v = hit[0][1] if hit else none %}
+          {{ (v.w / v.e) | round(2) if v and v.e > 0 else none }}
+        availability: >
+          {{ (state_attr('sensor.elga_ace_cop_per_buitentemperatuur', 'banden') or {}) | count > 0 }}
+        attributes:
+          curve: >
+            {% set b = state_attr('sensor.elga_ace_cop_per_buitentemperatuur', 'banden') or {} %}
+            {% set ns = namespace(r=[]) %}
+            {# Sleutels kunnen tekst ("4") of getal (4) zijn: beide accepteren #}
+            {% for t in b.keys() | map('int') | sort %}
+              {% set v = (b.items() | selectattr(0, 'in', [t, t | string]) | first)[1] %}
+              {% set ns.r = ns.r + [(t ~ ' tot ' ~ (t + 2) ~ ' °C',
+                 {'cop': (v.w / v.e) | round(2), 'dagen': v.n,
+                  'warmte_kwh': v.w | round(1), 'stroom_kwh': v.e | round(1)})] %}
+            {% endfor %}
+            {{ dict(ns.r) }}
+
+  # ---------- Afgesloten dag (00:01) + bandopbouw ----------
+  - triggers:
+      - trigger: time
+        at: "00:01:00"
+        id: dag
+      - trigger: state
+        entity_id: input_button.reset_cop_banden
+        id: reset
+    variables:
+      e: "{{ state_attr('sensor.wp_stroom_dag', 'last_period') | float(0) }}"
+      # Gemeten warmte (ESPHome flow + PT1000) voor de COP-curve
+      wg: "{{ state_attr('sensor.wp_warmte_gemeten_dag', 'last_period') | float(0) }}"
+      t: "{{ states('sensor.buitentemperatuur_gemiddeld_24u') | float(-99) }}"
+      geldig: "{{ trigger.id == 'dag' and e > 1 and wg > 0.5 and t > -90 }}"
+      band: "{{ ((t / 2) | round(0, 'floor') * 2) | int | string }}"
+    sensor:
+      - name: "Buitentemperatuur gisteren"
+        unique_id: buitentemperatuur_gisteren
+        unit_of_measurement: "°C"
+        device_class: temperature
+        state_class: measurement
+        state: "{{ t if t > -90 else none }}"
+
+      - name: "Elga Ace COP per buitentemperatuur"
+        unique_id: elga_ace_cop_per_buitentemperatuur
+        icon: mdi:thermometer-lines
+        unit_of_measurement: dagen
+        state: >
+          {% if trigger.id == 'reset' %}0
+          {% else %}{{ this.state | int(0) + (1 if geldig else 0) }}{% endif %}
+        attributes:
+          banden: >
+            {% set src = {} if trigger.id == 'reset'
+                         else (this.attributes.get('banden') or {}) %}
+            {# Sleutels altijd als tekst opslaan; oude getal-sleutels samenvoegen #}
+            {% set ns = namespace(d={}) %}
+            {% for k, v in src.items() %}
+              {% set ks = k | int | string %}
+              {% set o = ns.d.get(ks, {'w': 0, 'e': 0, 'n': 0}) %}
+              {% set ns.d = dict(ns.d.items() | rejectattr(0, 'eq', ks) | list
+                   + [(ks, {'w': (o.w + v.w) | round(2), 'e': (o.e + v.e) | round(3), 'n': o.n + v.n})]) %}
+            {% endfor %}
+            {% if geldig %}
+              {% set bk = band | int | string %}
+              {% set o = ns.d.get(bk, {'w': 0, 'e': 0, 'n': 0}) %}
+              {% set ns.d = dict(ns.d.items() | rejectattr(0, 'eq', bk) | list
+                   + [(bk, {'w': (o.w + wg) | round(2), 'e': (o.e + e) | round(3), 'n': o.n + 1})]) %}
+            {% endif %}
+            {{ ns.d }}

@@ -1,0 +1,255 @@
+# packages/warmtepomp_remeha.yaml
+# Vergelijking gemeten (COP-meter + HomeWizard) met wat de Remeha-cloud rapporteert.
+#
+# Bron: Remeha-integratie, apparaat "Remeha HeatPump". Die levert alleen
+# dagtotalen van GISTEREN (hele kWh), met attribuut 'day'. Daarom:
+#  - "gisteren"-vergelijkingen worden berekend zodra Remeha een nieuwe dag meldt;
+#  - maand/seizoen worden per dag opgeteld (een herziening van dezelfde dag
+#    vervangt de vorige waarde, niets wordt dubbel geteld);
+#  - afwijkingen gebruiken alleen dagen waarvoor ook een gemeten waarde is.
+#
+#  wr/er = Remeha warmte/stroom · wg/eh = gemeten warmte (ESPHome) / stroom (HomeWizard)
+#
+# Vereist: warmtepomp_cop_vergelijking.yaml (sensor.cop_gemeten_gisteren met attribuut 'dag').
+#
+# Knop "Remeha-vergelijking opnieuw beginnen": wist maand/seizoen en telt alleen de laatst
+# gemelde Remeha-dag opnieuw mee (handig na een dag met onvolledige meetdata).
+
+input_button:
+  reset_remeha_vergelijking:
+    name: Remeha-vergelijking opnieuw beginnen
+    icon: mdi:cloud-refresh-outline
+
+template:
+  - triggers:
+      - trigger: state
+        entity_id:
+          - sensor.remeha_heatpump_heating_energy_delivered_yesterday
+          - sensor.remeha_heatpump_heating_energy_consumed_yesterday
+        not_to: ["unavailable", "unknown"]
+      - trigger: state
+        entity_id: sensor.remeha_heatpump_heating_energy_delivered_yesterday
+        attribute: day
+      - trigger: state
+        entity_id: sensor.cop_gemeten_gisteren
+        attribute: dag
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id: input_button.reset_cop_banden
+        id: reset
+      - trigger: state
+        entity_id: input_button.reset_remeha_vergelijking
+        id: herbereken
+    variables:
+      reset: "{{ trigger.id == 'reset' }}"
+      herbereken: "{{ trigger.id == 'herbereken' }}"
+      dag_r: "{{ state_attr('sensor.remeha_heatpump_heating_energy_delivered_yesterday', 'day') | string }}"
+      dag_e: "{{ state_attr('sensor.remeha_heatpump_heating_energy_consumed_yesterday', 'day') | string }}"
+      wr: "{{ states('sensor.remeha_heatpump_heating_energy_delivered_yesterday') | float(-1) }}"
+      er: "{{ states('sensor.remeha_heatpump_heating_energy_consumed_yesterday') | float(-1) }}"
+      dag_g: "{{ state_attr('sensor.cop_gemeten_gisteren', 'dag') | string }}"
+      wg: "{{ state_attr('sensor.cop_gemeten_gisteren', 'warmte_kwh') | float(-1) }}"
+      eh: "{{ state_attr('sensor.cop_gemeten_gisteren', 'stroom_kwh') | float(-1) }}"
+      r_ok: "{{ wr >= 0 and er >= 0 and dag_r == dag_e and dag_r | length == 10 }}"
+      g_ok: "{{ r_ok and dag_g == dag_r and wg >= 0 and eh >= 0 }}"
+      periode_m: "{{ dag_r[:7] }}"
+      periode_s: "{% set j = dag_r[:4] | int(0) %}{% set j = j if dag_r[5:7] | int(0) >= 9 else j - 1 %}{{ j }}/{{ j + 1 }}"
+      cop_r: "{{ (wr / er) | round(2) if r_ok and er >= 1 else none }}"
+      cop_g: "{{ (wg / eh) | round(2) if g_ok and eh > 1 and wg > 0 else none }}"
+    sensor:
+      # ---------- Gisteren ----------
+      - name: "COP Remeha gisteren"
+        unique_id: cop_remeha_gisteren
+        state_class: measurement
+        icon: mdi:cloud-outline
+        state: "{{ cop_r if cop_r is number else this.state }}"
+        attributes:
+          dag: "{{ dag_r if r_ok else this.attributes.get('dag') }}"
+          warmte_kwh: "{{ wr if r_ok else this.attributes.get('warmte_kwh') }}"
+          stroom_kwh: "{{ er if r_ok else this.attributes.get('stroom_kwh') }}"
+
+      # Verschil = Remeha − gemeten (positief = Remeha te optimistisch)
+      - name: "COP verschil Remeha gisteren"
+        unique_id: cop_verschil_remeha_gisteren
+        state_class: measurement
+        icon: mdi:delta
+        state: >
+          {% if cop_r is number and cop_g is number %}{{ (cop_r - cop_g) | round(2) }}
+          {% elif r_ok and not g_ok %}{{ this.state }}{% else %}{{ none }}{% endif %}
+        attributes:
+          dag: "{{ dag_r if g_ok else this.attributes.get('dag') }}"
+
+      - name: "COP afwijking Remeha gisteren"
+        unique_id: cop_afwijking_remeha_gisteren
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:percent-outline
+        state: >
+          {% if cop_r is number and cop_g is number and cop_g > 0 %}{{ ((cop_r / cop_g - 1) * 100) | round(1) }}
+          {% elif r_ok and not g_ok %}{{ this.state }}{% else %}{{ none }}{% endif %}
+
+      - name: "Warmte afwijking Remeha gisteren"
+        unique_id: warmte_afwijking_remeha_gisteren
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:fire-alert
+        state: >
+          {% if g_ok and wg > 2 %}{{ ((wr / wg - 1) * 100) | round(1) }}
+          {% elif r_ok and not g_ok %}{{ this.state }}{% else %}{{ none }}{% endif %}
+
+      - name: "Stroom afwijking Remeha gisteren"
+        unique_id: stroom_afwijking_remeha_gisteren
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:flash-alert
+        state: >
+          {% if g_ok and eh > 1 %}{{ ((er / eh - 1) * 100) | round(1) }}
+          {% elif r_ok and not g_ok %}{{ this.state }}{% else %}{{ none }}{% endif %}
+
+      # ---------- Optellers (per dag, zonder dubbeltelling) ----------
+      - name: "Remeha vergelijking deze maand"
+        unique_id: remeha_vergelijking_maand
+        icon: mdi:cloud-sync-outline
+        state: "{{ dag_r if r_ok else this.state }}"
+        attributes:
+          data: >
+            {% set p = periode_m %}
+            {% set oud = {} if herbereken else (this.attributes.get('data') or {}) %}
+            {% if reset %}{{ {} }}
+            {% elif not r_ok %}{{ oud }}
+            {% else %}
+            {% set zelfde_p = oud.get('periode') == p %}
+            {% set s0 = (oud.get('s') or {}) if zelfde_p else {} %}
+            {% set l0 = (oud.get('l') or {}) if (zelfde_p and oud.get('dag') == dag_r) else {} %}
+            {% set wg_d = wg if g_ok else l0.get('wg') %}
+            {% set eh_d = eh if g_ok else l0.get('eh') %}
+            {% set v = wg_d is not none and eh_d is not none %}
+            {% set v0 = l0.get('wg') is not none and l0.get('eh') is not none %}
+            {% set lv = {'wr': wr, 'er': er, 'wr_v': wr if v else 0, 'er_v': er if v else 0,
+                         'wg_v': wg_d if v else 0, 'eh_v': eh_d if v else 0} %}
+            {% set l0v = {'wr': l0.get('wr', 0), 'er': l0.get('er', 0),
+                          'wr_v': l0.get('wr', 0) if v0 else 0, 'er_v': l0.get('er', 0) if v0 else 0,
+                          'wg_v': l0.get('wg') if v0 else 0, 'eh_v': l0.get('eh') if v0 else 0} %}
+            {% set ns = namespace(s=[]) %}
+            {% for k in ['wr', 'er', 'wr_v', 'er_v', 'wg_v', 'eh_v'] %}
+              {% set ns.s = ns.s + [(k, ((s0.get(k, 0) | float(0)) - (l0v[k] | float(0)) + (lv[k] | float(0))) | round(2))] %}
+            {% endfor %}
+            {{ {'periode': p, 'dag': dag_r, 'dagen': (oud.get('dagen', 0) if zelfde_p else 0) + (0 if l0 else 1),
+                'l': {'wr': wr, 'er': er, 'wg': wg_d, 'eh': eh_d}, 's': dict(ns.s)} }}
+            {% endif %}
+
+      - name: "Remeha vergelijking seizoen"
+        unique_id: remeha_vergelijking_seizoen
+        icon: mdi:cloud-sync-outline
+        state: "{{ dag_r if r_ok else this.state }}"
+        attributes:
+          data: >
+            {% set p = periode_s %}
+            {% set oud = {} if herbereken else (this.attributes.get('data') or {}) %}
+            {% if reset %}{{ {} }}
+            {% elif not r_ok %}{{ oud }}
+            {% else %}
+            {% set zelfde_p = oud.get('periode') == p %}
+            {% set s0 = (oud.get('s') or {}) if zelfde_p else {} %}
+            {% set l0 = (oud.get('l') or {}) if (zelfde_p and oud.get('dag') == dag_r) else {} %}
+            {% set wg_d = wg if g_ok else l0.get('wg') %}
+            {% set eh_d = eh if g_ok else l0.get('eh') %}
+            {% set v = wg_d is not none and eh_d is not none %}
+            {% set v0 = l0.get('wg') is not none and l0.get('eh') is not none %}
+            {% set lv = {'wr': wr, 'er': er, 'wr_v': wr if v else 0, 'er_v': er if v else 0,
+                         'wg_v': wg_d if v else 0, 'eh_v': eh_d if v else 0} %}
+            {% set l0v = {'wr': l0.get('wr', 0), 'er': l0.get('er', 0),
+                          'wr_v': l0.get('wr', 0) if v0 else 0, 'er_v': l0.get('er', 0) if v0 else 0,
+                          'wg_v': l0.get('wg') if v0 else 0, 'eh_v': l0.get('eh') if v0 else 0} %}
+            {% set ns = namespace(s=[]) %}
+            {% for k in ['wr', 'er', 'wr_v', 'er_v', 'wg_v', 'eh_v'] %}
+              {% set ns.s = ns.s + [(k, ((s0.get(k, 0) | float(0)) - (l0v[k] | float(0)) + (lv[k] | float(0))) | round(2))] %}
+            {% endfor %}
+            {{ {'periode': p, 'dag': dag_r, 'dagen': (oud.get('dagen', 0) if zelfde_p else 0) + (0 if l0 else 1),
+                'l': {'wr': wr, 'er': er, 'wg': wg_d, 'eh': eh_d}, 's': dict(ns.s)} }}
+            {% endif %}
+
+  # ---------- Maand en seizoen ----------
+  - sensor:
+      - name: "COP Remeha deze maand"
+        unique_id: cop_remeha_maand
+        state_class: measurement
+        icon: mdi:cloud-outline
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ (s.wr / s.er) | round(2) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ s.get('er', 0) | float(0) > 5 }}
+
+      - name: "COP Remeha seizoen"
+        unique_id: cop_remeha_seizoen
+        state_class: measurement
+        icon: mdi:cloud-outline
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_seizoen', 'data') or {}).get('s') or {} %}
+          {{ (s.wr / s.er) | round(2) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_seizoen', 'data') or {}).get('s') or {} %}
+          {{ s.get('er', 0) | float(0) > 10 }}
+
+      # Afwijkingen: alleen over dagen met zowel Remeha- als gemeten waarde
+      - name: "COP verschil Remeha deze maand"
+        unique_id: cop_verschil_remeha_maand
+        state_class: measurement
+        icon: mdi:delta
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ (s.wr_v / s.er_v - s.wg_v / s.eh_v) | round(2) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ s.get('er_v', 0) | float(0) > 5 and s.get('eh_v', 0) | float(0) > 5 and s.get('wg_v', 0) | float(0) > 0 }}
+
+      - name: "COP afwijking Remeha deze maand"
+        unique_id: cop_afwijking_remeha_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:percent-outline
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ (((s.wr_v / s.er_v) / (s.wg_v / s.eh_v) - 1) * 100) | round(1) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ s.get('er_v', 0) | float(0) > 5 and s.get('eh_v', 0) | float(0) > 5 and s.get('wg_v', 0) | float(0) > 0 }}
+
+      - name: "COP afwijking Remeha seizoen"
+        unique_id: cop_afwijking_remeha_seizoen
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:percent-outline
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_seizoen', 'data') or {}).get('s') or {} %}
+          {{ (((s.wr_v / s.er_v) / (s.wg_v / s.eh_v) - 1) * 100) | round(1) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_seizoen', 'data') or {}).get('s') or {} %}
+          {{ s.get('er_v', 0) | float(0) > 10 and s.get('eh_v', 0) | float(0) > 10 and s.get('wg_v', 0) | float(0) > 0 }}
+
+      - name: "Warmte afwijking Remeha deze maand"
+        unique_id: warmte_afwijking_remeha_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:fire-alert
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ ((s.wr_v / s.wg_v - 1) * 100) | round(1) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ s.get('wg_v', 0) | float(0) > 10 }}
+
+      - name: "Stroom afwijking Remeha deze maand"
+        unique_id: stroom_afwijking_remeha_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:flash-alert
+        state: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ ((s.er_v / s.eh_v - 1) * 100) | round(1) }}
+        availability: >
+          {% set s = (state_attr('sensor.remeha_vergelijking_deze_maand', 'data') or {}).get('s') or {} %}
+          {{ s.get('eh_v', 0) | float(0) > 5 }}

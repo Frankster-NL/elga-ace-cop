@@ -1,0 +1,159 @@
+# packages/warmtepomp_warmwater.yaml
+# Gasverbruik splitsen in WARM WATER en CV (ruimteverwarming) – Remeha Tzerra (combi).
+#
+# Principe: de Tzerra heeft warmwatervoorrang. Tijdens tappen gaat de driewegklep
+# om en stroomt er niets door leiding 5 (ketellus). Dus:
+#   brander aan  (Tzerra-stekker > 45 W)  +  geen debiet in leiding 5  →  warm water
+#   brander aan                            +  debiet in leiding 5      →  cv
+# Elke stap van de P1-gasmeter wordt verdeeld naar rato van de brandertijd per soort
+# sinds de vorige stap. Gas warm water + gas cv = P1-gas, exact.
+#
+# Bonus: het Tzerra-rendement wordt hiermee zuiver (ketelwarmte / cv-gas, zonder tapwater).
+#
+# Bronnen: sensor.cv_power (stekker Tzerra), sensor.elga_ace_cop_debiet_ketellus (COP-meter),
+#          sensor.gas_meter_gas (P1).
+
+template:
+  # ---------- Wat doet de Tzerra nu? ----------
+  - binary_sensor:
+      - name: "Tzerra brander"
+        unique_id: tzerra_brander
+        icon: mdi:fire
+        # stand-by ~4 W · alleen pomp ~33 W · brander/ventilator 55–90 W
+        state: "{{ states('sensor.cv_power') | float(0) > 45 }}"
+        delay_off: "00:00:15"
+
+  - sensor:
+      - name: "Tzerra warm water actief"
+        unique_id: tzerra_warm_water_actief
+        icon: mdi:water-boiler
+        state: >
+          {{ 1 if is_state('binary_sensor.tzerra_brander', 'on')
+                  and states('sensor.elga_ace_cop_debiet_ketellus') | float(0) < 1 else 0 }}
+
+      - name: "Tzerra cv actief"
+        unique_id: tzerra_cv_actief
+        icon: mdi:radiator
+        state: >
+          {{ 1 if is_state('binary_sensor.tzerra_brander', 'on')
+                  and states('sensor.elga_ace_cop_debiet_ketellus') | float(0) >= 1 else 0 }}
+
+  # ---------- Verdeling van elke P1-gasstap ----------
+  - triggers:
+      - trigger: state
+        entity_id: sensor.gas_meter_gas
+    variables:
+      g_new: "{{ trigger.to_state.state | float(-1) if trigger.to_state else -1 }}"
+      g_old: "{{ trigger.from_state.state | float(-1) if trigger.from_state else -1 }}"
+      dg: "{{ (g_new - g_old) if (g_new >= 0 and g_old >= 0 and 0 <= (g_new - g_old) < 1) else 0 }}"
+      hw: "{{ states('sensor.tzerra_warm_water_branduren') | float(-1) }}"
+      hc: "{{ states('sensor.tzerra_cv_branduren') | float(-1) }}"
+      ketellus_nu: "{{ states('sensor.elga_ace_cop_debiet_ketellus') | float(0) >= 1 }}"
+    sensor:
+      - name: "Gas warm water"
+        unique_id: gas_warm_water_totaal
+        unit_of_measurement: "m³"
+        device_class: gas
+        state_class: total_increasing
+        icon: mdi:shower-head
+        state: >
+          {% set dw = hw - this.attributes.get('hw', hw) | float(hw) %}
+          {% set dc = hc - this.attributes.get('hc', hc) | float(hc) %}
+          {% set dw = [dw, 0] | max if hw >= 0 and hc >= 0 else 0 %}
+          {% set dc = [dc, 0] | max if hw >= 0 and hc >= 0 else 0 %}
+          {% set f = dw / (dw + dc) if (dw + dc) > 0 else (0 if ketellus_nu else 1) %}
+          {{ (this.state | float(0) + dg * f) | round(3) }}
+        attributes:
+          hw: "{{ hw if hw >= 0 else this.attributes.get('hw') }}"
+          hc: "{{ hc if hc >= 0 else this.attributes.get('hc') }}"
+
+      - name: "Gas cv"
+        unique_id: gas_cv_totaal
+        unit_of_measurement: "m³"
+        device_class: gas
+        state_class: total_increasing
+        icon: mdi:radiator
+        state: >
+          {% set dw = hw - this.attributes.get('hw', hw) | float(hw) %}
+          {% set dc = hc - this.attributes.get('hc', hc) | float(hc) %}
+          {% set dw = [dw, 0] | max if hw >= 0 and hc >= 0 else 0 %}
+          {% set dc = [dc, 0] | max if hw >= 0 and hc >= 0 else 0 %}
+          {% set f = dc / (dw + dc) if (dw + dc) > 0 else (1 if ketellus_nu else 0) %}
+          {{ (this.state | float(0) + dg * f) | round(3) }}
+        attributes:
+          hw: "{{ hw if hw >= 0 else this.attributes.get('hw') }}"
+          hc: "{{ hc if hc >= 0 else this.attributes.get('hc') }}"
+
+  # ---------- Afgeleid ----------
+  - sensor:
+      - name: "Aandeel warm water in gas deze maand"
+        unique_id: aandeel_warm_water_gas_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:chart-pie
+        state: >
+          {% set w = states('sensor.gas_warm_water_maand') | float(0) %}
+          {% set c = states('sensor.gas_cv_maand') | float(0) %}
+          {{ (w / (w + c) * 100) | round(0) }}
+        availability: >
+          {{ (states('sensor.gas_warm_water_maand') | float(0) + states('sensor.gas_cv_maand') | float(0)) > 0.1 }}
+
+      - name: "Kosten warm water deze maand"
+        unique_id: kosten_warm_water_maand
+        unit_of_measurement: "EUR"
+        state_class: measurement
+        icon: mdi:cash
+        state: >
+          {{ (states('sensor.gas_warm_water_maand') | float(0)
+              * states('input_number.gasprijs_per_m3') | float(0)) | round(2) }}
+        availability: >
+          {{ has_value('sensor.gas_warm_water_maand') and has_value('input_number.gasprijs_per_m3') }}
+
+sensor:
+  # Brandertijd per soort (uren). max_sub_interval houdt de teller ook tijdens
+  # een lange brandperiode actueel, zodat elke gasstap goed verdeeld wordt.
+  - platform: integration
+    name: "Tzerra warm water branduren"
+    unique_id: tzerra_warm_water_branduren
+    source: sensor.tzerra_warm_water_actief
+    method: left
+    unit_time: h
+    round: 5
+    max_sub_interval:
+      seconds: 30
+
+  - platform: integration
+    name: "Tzerra cv branduren"
+    unique_id: tzerra_cv_branduren
+    source: sensor.tzerra_cv_actief
+    method: left
+    unit_time: h
+    round: 5
+    max_sub_interval:
+      seconds: 30
+
+utility_meter:
+  gas_warm_water_dag:
+    unique_id: gas_warm_water_dag
+    source: sensor.gas_warm_water
+    cycle: daily
+  gas_warm_water_maand:
+    unique_id: gas_warm_water_maand
+    source: sensor.gas_warm_water
+    cycle: monthly
+  gas_warm_water_seizoen:
+    unique_id: gas_warm_water_seizoen
+    source: sensor.gas_warm_water
+    cron: "0 0 1 9 *"
+  gas_cv_dag:
+    unique_id: gas_cv_dag
+    source: sensor.gas_cv
+    cycle: daily
+  gas_cv_maand:
+    unique_id: gas_cv_maand
+    source: sensor.gas_cv
+    cycle: monthly
+  gas_cv_seizoen:
+    unique_id: gas_cv_seizoen
+    source: sensor.gas_cv
+    cron: "0 0 1 9 *"

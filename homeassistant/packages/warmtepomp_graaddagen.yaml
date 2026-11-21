@@ -1,0 +1,159 @@
+# packages/warmtepomp_graaddagen.yaml
+# Verwarming per gewogen graaddag (kWh/ggd) op basis van GEMETEN warmte (ESPHome).
+#
+#  Graaddag          = max(0, stookgrens − etmaalgemiddelde buitentemperatuur)
+#  Gewogen graaddag  = graaddag × weegfactor (jan/feb/nov/dec 1,1 · mrt/okt 1,0 · apr–sep 0,8)
+#  Netto warmte      = warmtepomp warmte + ketel warmte − ontdooiwarmte  (alleen ruimteverwarming)
+#  kWh/ggd           = netto warmte / gewogen graaddagen
+#
+# Alles wordt om 00:01 berekend voor de afgesloten dag (gisteren). Maand- en seizoens-
+# waarden tellen alleen afgesloten dagen op en horen bij de maand/het seizoen van gisteren.
+# Dagen met < 2 gewogen graaddagen geven geen dag-kWh/ggd (te veel ruis), maar tellen
+# wel mee in maand en seizoen.
+# Dagen met ≥ 1 ggd maar zonder gemeten warmte (COP-meter offline) worden overgeslagen,
+# zodat ze de maand- en seizoenswaarde niet omlaag trekken.
+
+input_number:
+  graaddag_stookgrens:
+    name: Stookgrens graaddagen
+    min: 12
+    max: 20
+    step: 0.5
+    initial: 18
+    unit_of_measurement: "°C"
+    mode: box
+    icon: mdi:thermometer-low
+
+input_button:
+  reset_graaddagen:
+    name: Reset graaddagen
+    icon: mdi:restart
+
+template:
+  - triggers:
+      - trigger: time
+        at: "00:01:00"
+        id: dag
+      - trigger: state
+        entity_id: input_button.reset_graaddagen
+        id: reset
+    variables:
+      reset: "{{ trigger.id == 'reset' }}"
+      maand_nr: "{{ (now() - timedelta(days=1)).month }}"
+      periode_maand: "{{ (now() - timedelta(days=1)).strftime('%Y-%m') }}"
+      periode_seizoen: >
+        {% set d = now() - timedelta(days=1) %}
+        {% set j = d.year if d.month >= 9 else d.year - 1 %}
+        {{ j }}/{{ j + 1 }}
+      weegfactor: >
+        {{ 1.1 if maand_nr in [1, 2, 11, 12] else 1.0 if maand_nr in [3, 10] else 0.8 }}
+      t: "{{ states('sensor.buitentemperatuur_gemiddeld_24u') | float(-99) }}"
+      geldig: "{{ t > -90 }}"
+      gd: "{{ [0, states('input_number.graaddag_stookgrens') | float(18) - t] | max if geldig else 0 }}"
+      ggd: "{{ (gd * weegfactor) | round(2) }}"
+      wp: "{{ state_attr('sensor.wp_warmte_gemeten_dag', 'last_period') | float(0) }}"
+      ketel: "{{ state_attr('sensor.cv_warmte_gemeten_dag', 'last_period') | float(0) }}"
+      ontdooi: "{{ state_attr('sensor.wp_ontdooi_dag', 'last_period') | float(0) }}"
+      warmte: "{{ [0, wp + ketel - ontdooi] | max | round(2) }}"
+      telt: "{{ not reset and geldig and (warmte > 0.5 or ggd < 1) }}"
+      ggd_t: "{{ ggd if telt else 0 }}"
+      warmte_t: "{{ warmte if telt else 0 }}"
+    sensor:
+      # ---------- Dag ----------
+      - name: "Gewogen graaddagen gisteren"
+        unique_id: gewogen_graaddagen_gisteren
+        unit_of_measurement: ggd
+        state_class: measurement
+        icon: mdi:thermometer-minus
+        state: "{{ ggd if geldig and not reset else this.state }}"
+        attributes:
+          graaddagen: "{{ gd | round(2) }}"
+          weegfactor: "{{ weegfactor }}"
+          buitentemperatuur: "{{ t | round(1) if geldig else none }}"
+
+      - name: "Verwarming gisteren"
+        unique_id: verwarming_netto_gisteren
+        unit_of_measurement: kWh
+        state_class: measurement
+        icon: mdi:radiator
+        state: "{{ warmte if not reset else this.state }}"
+        attributes:
+          warmtepomp_kwh: "{{ wp | round(2) }}"
+          ketel_kwh: "{{ ketel | round(2) }}"
+          ontdooi_kwh: "{{ ontdooi | round(2) }}"
+
+      - name: "Verwarming per gewogen graaddag gisteren"
+        unique_id: kwh_per_ggd_gisteren
+        unit_of_measurement: kWh/ggd
+        state_class: measurement
+        icon: mdi:home-thermometer
+        state: >
+          {% if reset %}{{ this.state }}
+          {% else %}{{ (warmte / ggd) | round(2) if telt and ggd >= 2 else none }}{% endif %}
+
+      # ---------- Maand (afgesloten dagen) ----------
+      - name: "Gewogen graaddagen deze maand"
+        unique_id: gewogen_graaddagen_maand
+        unit_of_measurement: ggd
+        state_class: measurement
+        icon: mdi:calendar-month
+        state: >
+          {% set oud = this.state | float(0) if (not reset and this.attributes.get('periode') == periode_maand) else 0 %}
+          {{ (oud + ggd_t) | round(1) }}
+        attributes:
+          periode: "{{ periode_maand }}"
+
+      - name: "Verwarming per gewogen graaddag deze maand"
+        unique_id: kwh_per_ggd_maand
+        unit_of_measurement: kWh/ggd
+        state_class: measurement
+        icon: mdi:home-thermometer
+        state: >
+          {% set zelfde = (not reset and this.attributes.get('periode') == periode_maand) %}
+          {% set g = (this.attributes.get('graaddagen', 0) | float(0) if zelfde else 0) + ggd_t %}
+          {% set w = (this.attributes.get('warmte_kwh', 0) | float(0) if zelfde else 0) + warmte_t %}
+          {{ (w / g) | round(2) if g >= 5 else none }}
+        attributes:
+          periode: "{{ periode_maand }}"
+          graaddagen: >
+            {% set zelfde = (not reset and this.attributes.get('periode') == periode_maand) %}
+            {{ ((this.attributes.get('graaddagen', 0) | float(0) if zelfde else 0) + ggd_t) | round(2) }}
+          warmte_kwh: >
+            {% set zelfde = (not reset and this.attributes.get('periode') == periode_maand) %}
+            {{ ((this.attributes.get('warmte_kwh', 0) | float(0) if zelfde else 0) + warmte_t) | round(2) }}
+
+      # ---------- Stookseizoen (vanaf 1 september, afgesloten dagen) ----------
+      - name: "Gewogen graaddagen seizoen"
+        unique_id: gewogen_graaddagen_seizoen
+        unit_of_measurement: ggd
+        state_class: measurement
+        icon: mdi:calendar-range
+        state: >
+          {% set oud = this.state | float(0) if (not reset and this.attributes.get('periode') == periode_seizoen) else 0 %}
+          {{ (oud + ggd_t) | round(1) }}
+        attributes:
+          periode: "{{ periode_seizoen }}"
+
+      - name: "Verwarming per gewogen graaddag seizoen"
+        unique_id: kwh_per_ggd_seizoen
+        unit_of_measurement: kWh/ggd
+        state_class: measurement
+        icon: mdi:home-thermometer
+        state: >
+          {% set zelfde = (not reset and this.attributes.get('periode') == periode_seizoen) %}
+          {% set g = (this.attributes.get('graaddagen', 0) | float(0) if zelfde else 0) + ggd_t %}
+          {% set w = (this.attributes.get('warmte_kwh', 0) | float(0) if zelfde else 0) + warmte_t %}
+          {{ (w / g) | round(2) if g >= 10 else none }}
+        attributes:
+          periode: "{{ periode_seizoen }}"
+          graaddagen: >
+            {% set zelfde = (not reset and this.attributes.get('periode') == periode_seizoen) %}
+            {{ ((this.attributes.get('graaddagen', 0) | float(0) if zelfde else 0) + ggd_t) | round(2) }}
+          warmte_kwh: >
+            {% set zelfde = (not reset and this.attributes.get('periode') == periode_seizoen) %}
+            {{ ((this.attributes.get('warmte_kwh', 0) | float(0) if zelfde else 0) + warmte_t) | round(2) }}
+          gas_equivalent_m3: >
+            {% set zelfde = (not reset and this.attributes.get('periode') == periode_seizoen) %}
+            {% set w = (this.attributes.get('warmte_kwh', 0) | float(0) if zelfde else 0) + warmte_t %}
+            {{ (w / (states('input_number.gas_calorische_waarde') | float(9.77)
+                     * states('input_number.cv_rendement') | float(0.95))) | round(0) }}

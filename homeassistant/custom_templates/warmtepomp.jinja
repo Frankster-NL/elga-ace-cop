@@ -1,0 +1,18 @@
+{# /config/custom_templates/warmtepomp.jinja
+   Besparing van de warmtepomp t.o.v. dezelfde warmte uit de cv-ketel.
+   warmte: geleverde warmte WP (kWh, of kW voor €/uur)
+   stroom: verbruikte stroom WP (kWh, of kW voor €/uur)
+   Uitkomst in EUR (of EUR/uur bij vermogens). #}
+{% macro besparing(warmte, stroom) -%}
+{%- set cv_kwh_per_m3 = states('input_number.gas_calorische_waarde') | float(9.77)
+                       * states('input_number.cv_rendement') | float(0.95) -%}
+{%- set gas_m3 = (warmte | float(0)) / cv_kwh_per_m3 -%}
+{{- (gas_m3 * states('input_number.gasprijs_per_m3') | float(0)
+     - (stroom | float(0)) * states('input_number.stroomprijs_huidig_tarief') | float(0)) | round(2) -}}
+{%- endmacro %}
+
+{% macro vermeden_gas(warmte) -%}
+{{- ((warmte | float(0))
+     / (states('input_number.gas_calorische_waarde') | float(9.77)
+        * states('input_number.cv_rendement') | float(0.95))) | round(1) -}}
+{%- endmacro %}

@@ -1,0 +1,1358 @@
+# mush-cv – volledige vertical-stack (live versie 15-11-2026 + wijzigingen 2 flowmeters)
+# Analysegrafieken gebruiken alleen data vanaf de eindmontage (17-11-2026 10:10).
+# Plakken: dashboard bewerken → kaart "Gas vs vloerverwarming" → ⋮ → Code-editor → alles vervangen.
+type: vertical-stack
+title: Gas vs vloerverwarming
+cards:
+  # ---------- Kerncijfers COP (gemeten) ----------
+  - type: horizontal-stack
+    cards:
+      - type: custom:mushroom-legacy-template-card
+        entity: sensor.cop_gemeten_gisteren
+        primary: "{{ states(entity) if has_value(entity) else '–' }}"
+        secondary: Gisteren
+        icon: mdi:heat-pump
+        layout: vertical
+        icon_color: &copkleur >
+          {% set c = states(entity) | float(0) %}
+          {{ 'grey' if c == 0 else 'red' if c < 3 else 'orange' if c < 4 else 'green' }}
+        tap_action:
+          action: more-info
+      - type: custom:mushroom-legacy-template-card
+        entity: sensor.cop_gemeten_deze_maand
+        primary: "{{ states(entity) if has_value(entity) else '–' }}"
+        secondary: Deze maand
+        icon: mdi:calendar-month
+        layout: vertical
+        icon_color: *copkleur
+        tap_action:
+          action: more-info
+      - type: custom:mushroom-legacy-template-card
+        entity: sensor.cop_gemeten_seizoen
+        primary: "{{ states(entity) if has_value(entity) else '–' }}"
+        secondary: SCOP seizoen
+        icon: mdi:calendar-range
+        layout: vertical
+        icon_color: *copkleur
+        tap_action:
+          action: more-info
+      - type: custom:mushroom-legacy-template-card
+        entity: sensor.elga_ace_cop_curve
+        primary: "{{ states(entity) if has_value(entity) else '–' }}"
+        secondary: >
+          Verwacht bij {{ states('sensor.remeha_heatpump_outdoor_temperature') | float(0) | round(1) }} °C
+        icon: mdi:chart-bell-curve
+        layout: vertical
+        icon_color: *copkleur
+        tap_action:
+          action: more-info
+
+  # ---------- Gemeten (alleen als de COP-meter online is) ----------
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: binary_sensor.elga_ace_cop_status
+        state: "on"
+    card:
+      type: vertical-stack
+      cards:
+        - type: custom:mushroom-title-card
+          title: Gemeten
+          subtitle: 2× flowmeter + 4× PT1000 + HomeWizard
+        - type: horizontal-stack
+          cards:
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.elga_ace_cop_cop_momentaan
+              primary: >
+                {{ '%.2f' | format(states(entity) | float) if has_value(entity) else '–' }}
+              secondary: COP nu
+              icon: mdi:heat-pump-outline
+              layout: vertical
+              icon_color: *copkleur
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.elga_ace_cop_debiet
+              primary: "{{ states(entity) | float(0) | round(1) }} L/min"
+              secondary: Debiet vloer (7)
+              icon: mdi:waves-arrow-right
+              layout: vertical
+              icon_color: "{{ 'blue' if states(entity) | float(0) > 1 else 'grey' }}"
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.elga_ace_cop_warmtepomp_thermisch_vermogen
+              primary: "{{ states(entity) | float(0) | round(2) }} kW"
+              secondary: WP warmte
+              icon: mdi:fire
+              layout: vertical
+              icon_color: "{{ 'deep-orange' if states(entity) | float(0) > 0.1 else 'grey' }}"
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.elga_ace_cop_ketel_thermisch_vermogen
+              primary: "{{ states(entity) | float(0) | round(2) }} kW"
+              secondary: Ketel warmte
+              icon: mdi:water-boiler
+              layout: vertical
+              icon_color: "{{ 'purple' if states(entity) | float(0) > 0.1 else 'grey' }}"
+              tap_action:
+                action: more-info
+        - type: custom:mushroom-chips-card
+          alignment: center
+          chips:
+            - type: template
+              entity: sensor.elga_ace_cop_delta_t_warmtepomp
+              icon: mdi:heat-pump
+              content: ΔT WP {{ states(entity) | float(0) | round(1) }} K
+            - type: template
+              entity: sensor.elga_ace_cop_delta_t_ketel
+              icon: mdi:water-boiler
+              content: ΔT ketel {{ states(entity) | float(0) | round(1) }} K
+            - type: template
+              entity: sensor.elga_ace_cop_hybride_aandeel_warmtepomp
+              icon: mdi:chart-donut
+              content: WP-aandeel {{ states(entity) if has_value(entity) else '–' }} %
+            - type: template
+              entity: binary_sensor.elga_ace_cop_ketellus_actief
+              icon: "{{ 'mdi:water-boiler' if is_state(entity, 'on') else 'mdi:heat-pump' }}"
+              icon_color: "{{ 'purple' if is_state(entity, 'on') else 'green' }}"
+              content: >
+                {% if is_state(entity, 'on') %}Ketel bij · {{ states('sensor.elga_ace_cop_debiet_ketellus') | float(0) | round(1) }} L/min{% else %}Alleen warmtepomp{% endif %}
+            - type: template
+              entity: sensor.elga_ace_cop_totaal_thermisch_vermogen
+              icon: mdi:heating-coil
+              content: Naar vloer {{ states(entity) | float(0) | round(2) }} kW
+            - type: template
+              entity: binary_sensor.elga_ace_cop_ontdooien
+              icon: mdi:snowflake-melt
+              icon_color: "{{ 'cyan' if is_state(entity, 'on') else 'grey' }}"
+              content: >
+                {% if is_state(entity, 'on') %}Ontdooien{% else %}{{ states('sensor.wp_ontdooicycli_dag') | int(0) }}× ontdooid vandaag{% endif %}
+        - type: custom:apexcharts-card
+          graph_span: 24h
+          update_interval: 1min
+          header:
+            show: true
+            title: COP en vermogen (24 uur)
+            show_states: false
+          yaxis:
+            - id: cop
+              min: 0
+              max: 8
+              decimals: 1
+              apex_config:
+                title:
+                  text: COP
+            - id: kw
+              opposite: true
+              min: 0
+              decimals: 1
+              apex_config:
+                title:
+                  text: kW
+          series:
+            - entity: sensor.elga_ace_cop_cop_momentaan
+              name: COP
+              yaxis_id: cop
+              type: line
+              stroke_width: 1
+              color: "#2e7d32"
+              group_by:
+                func: avg
+                duration: 5min
+                fill: "null"          # geen lijn doortrekken als de WP uit staat
+            - entity: sensor.elga_ace_cop_warmtepomp_thermisch_vermogen
+              name: WP warmte
+              yaxis_id: kw
+              type: area
+              opacity: 0.25
+              stroke_width: 1
+              color: "#ef6c00"
+              group_by: &avg5
+                func: avg
+                duration: 5min
+            - entity: sensor.elga_ace_cop_ketel_thermisch_vermogen
+              name: Ketel warmte
+              yaxis_id: kw
+              type: area
+              opacity: 0.25
+              stroke_width: 1
+              color: "#8e24aa"
+              group_by: *avg5
+            - entity: sensor.elga_ace_cop_ontdooi_vermogen
+              name: Ontdooien
+              yaxis_id: kw
+              type: area
+              opacity: 0.35
+              stroke_width: 1
+              color: "#00acc1"
+              group_by: *avg5
+            - entity: sensor.warmtepomp_power
+              name: WP stroom
+              yaxis_id: kw
+              type: line
+              stroke_width: 1
+              color: "#fbc02d"
+              transform: return x / 1000;
+              group_by: *avg5
+        - type: custom:apexcharts-card
+          graph_span: 24h
+          update_interval: 1min
+          header:
+            show: true
+            title: Temperaturen en debiet (24 uur)
+            show_states: true
+            colorize_states: true
+          yaxis:
+            - id: temp
+              decimals: 0
+              apex_config:
+                title:
+                  text: °C
+            - id: flow
+              opposite: true
+              min: 0
+              decimals: 0
+              apex_config:
+                title:
+                  text: L/min
+          series:
+            - entity: sensor.elga_ace_cop_t1_retour
+              name: T1 retour vloer
+              yaxis_id: temp
+              stroke_width: 1
+              color: "#1e88e5"
+              group_by: &avg2
+                func: avg
+                duration: 2min
+            - entity: sensor.elga_ace_cop_t4_aanvoer_vloer
+              name: T4 aanvoer vloer
+              yaxis_id: temp
+              stroke_width: 2
+              color: "#e53935"
+              group_by: *avg2
+            - entity: sensor.elga_ace_cop_t2_warmtepomp_uit
+              name: T2 naar ketel
+              yaxis_id: temp
+              stroke_width: 1
+              color: "#ef6c00"
+              group_by: *avg2
+            - entity: sensor.elga_ace_cop_t3_aanvoer
+              name: T3 van ketel
+              yaxis_id: temp
+              stroke_width: 1
+              color: "#8e24aa"
+              group_by: *avg2
+            - entity: sensor.buitentemperatuur_gemiddeld_24u
+              name: Buiten (24u gem.)
+              yaxis_id: temp
+              stroke_width: 1
+              color: "#90a4ae"
+            - entity: sensor.elga_ace_cop_debiet
+              name: Debiet vloer (7)
+              yaxis_id: flow
+              type: area
+              opacity: 0.15
+              stroke_width: 1
+              color: "#00897b"
+              group_by: *avg2
+            - entity: sensor.elga_ace_cop_debiet_ketellus
+              name: Debiet ketellus (5)
+              yaxis_id: flow
+              type: area
+              opacity: 0.15
+              stroke_width: 1
+              color: "#ab47bc"
+              group_by: *avg2
+
+        # ---------- Gemeten vs Remeha ----------
+        - type: custom:mushroom-title-card
+          title: Gemeten vs Remeha
+          subtitle: Positief verschil = Remeha rapporteert te hoog
+        - type: horizontal-stack
+          cards:
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.cop_gemeten_gisteren
+              primary: "{{ states(entity) if has_value(entity) else '–' }}"
+              secondary: Gemeten gisteren
+              icon: mdi:heat-pump
+              layout: vertical
+              icon_color: *copkleur
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.cop_remeha_gisteren
+              primary: "{{ states(entity) if has_value(entity) else '–' }}"
+              secondary: Remeha gisteren
+              icon: mdi:cloud-outline
+              layout: vertical
+              icon_color: *copkleur
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.cop_verschil_remeha_gisteren
+              primary: >
+                {% if has_value(entity) %}{{ '%+.2f' | format(states(entity) | float) }}{% else %}–{% endif %}
+              secondary: Verschil
+              icon: mdi:delta
+              layout: vertical
+              icon_color: >
+                {% set d = states(entity) | float(0) | abs %}
+                {{ 'grey' if not has_value(entity) else 'green' if d <= 0.3 else 'orange' if d <= 0.8 else 'red' }}
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.warmte_afwijking_remeha_gisteren
+              primary: >
+                {% if has_value(entity) %}{{ '%+.0f' | format(states(entity) | float) }} %{% else %}–{% endif %}
+              secondary: Warmte Remeha
+              icon: mdi:fire-alert
+              layout: vertical
+              icon_color: >
+                {% set d = states(entity) | float(0) | abs %}
+                {{ 'grey' if not has_value(entity) else 'green' if d <= 5 else 'orange' if d <= 15 else 'red' }}
+              tap_action:
+                action: more-info
+        - type: custom:apexcharts-card
+          graph_span: 30d
+          span:
+            end: day
+          header:
+            show: true
+            title: Dag-COP gemeten vs Remeha
+            show_states: false
+          all_series_config:
+            offset: -1d
+            statistics:
+              type: mean
+              period: day
+          yaxis:
+            - id: cop
+              min: 0
+              max: 8
+              decimals: 1
+              apex_config:
+                title:
+                  text: COP
+            - id: pct
+              opposite: true
+              decimals: 0
+              apex_config:
+                title:
+                  text: "% afwijking"
+          series:
+            - entity: sensor.cop_gemeten_gisteren
+              name: Gemeten
+              yaxis_id: cop
+              type: column
+              color: "#2e7d32"
+            - entity: sensor.cop_remeha_gisteren
+              name: Remeha
+              yaxis_id: cop
+              type: column
+              color: "#90a4ae"
+            - entity: sensor.cop_afwijking_remeha_gisteren
+              name: Afwijking
+              yaxis_id: pct
+              type: line
+              stroke_width: 2
+              color: "#e53935"
+        - type: entities
+          title: Gemeten vs Remeha – perioden
+          state_color: true
+          entities:
+            - type: section
+              label: Deze maand
+            - entity: sensor.cop_gemeten_deze_maand
+              name: COP gemeten
+            - entity: sensor.cop_remeha_deze_maand
+              name: COP Remeha
+            - entity: sensor.cop_verschil_remeha_deze_maand
+              name: Verschil (Remeha − gemeten)
+            - entity: sensor.cop_afwijking_remeha_deze_maand
+              name: Afwijking COP
+            - entity: sensor.warmte_afwijking_remeha_deze_maand
+              name: Afwijking geleverde warmte
+            - entity: sensor.stroom_afwijking_remeha_deze_maand
+              name: Afwijking stroomverbruik
+            - type: section
+              label: Stookseizoen
+            - entity: sensor.cop_gemeten_seizoen
+              name: SCOP gemeten
+            - entity: sensor.cop_remeha_seizoen
+              name: SCOP Remeha
+            - entity: sensor.cop_afwijking_remeha_seizoen
+              name: Afwijking SCOP
+            - type: section
+              label: Ontdooien
+            - entity: sensor.ontdooicycli_gisteren
+              name: Ontdooicycli gisteren
+            - entity: sensor.elga_ace_cop_duur_laatste_ontdooiing
+              name: Duur laatste ontdooiing
+            - entity: sensor.ontdooiverlies_gisteren
+              name: Ontdooiverlies gisteren
+            - entity: sensor.ontdooiverlies_deze_maand
+              name: Ontdooiverlies deze maand
+            - entity: sensor.cop_gemeten_netto_deze_maand
+              name: COP netto deze maand (na ontdooien)
+            - type: section
+              label: Tzerra (gemeten ketelwarmte / P1-gas)
+            - entity: sensor.rendement_tzerra_gisteren
+              name: Rendement gisteren
+            - entity: sensor.rendement_tzerra_deze_maand
+              name: Rendement deze maand
+
+  # ---------- Besparing ----------
+  - type: conditional
+    conditions:
+      - condition: state
+        entity: binary_sensor.elga_ace_cop_status
+        state: "on"
+    card:
+      type: vertical-stack
+      cards:
+        - type: custom:mushroom-title-card
+          title: Besparing
+          subtitle: Warmtepomp vs dezelfde warmte uit de Tzerra
+        - type: horizontal-stack
+          cards:
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.besparing_warmtepomp_nu
+              primary: >
+                {% if has_value(entity) %}€ {{ ('%.2f' | format(states(entity) | float)) | replace('.', ',') }}/u{% else %}–{% endif %}
+              secondary: Nu
+              icon: mdi:cash-fast
+              layout: vertical
+              icon_color: &eurkleur >
+                {% set v = states(entity) | float(0) %}
+                {{ 'grey' if not has_value(entity) or v == 0 else 'green' if v > 0 else 'red' }}
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.besparing_warmtepomp_vandaag
+              primary: &eur >
+                {% if has_value(entity) %}€ {{ ('%.2f' | format(states(entity) | float)) | replace('.', ',') }}{% else %}–{% endif %}
+              secondary: Vandaag
+              icon: mdi:cash
+              layout: vertical
+              icon_color: *eurkleur
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.besparing_warmtepomp_deze_maand
+              primary: *eur
+              secondary: Deze maand
+              icon: mdi:cash-multiple
+              layout: vertical
+              icon_color: *eurkleur
+              tap_action:
+                action: more-info
+            - type: custom:mushroom-legacy-template-card
+              entity: sensor.besparing_warmtepomp_seizoen
+              primary: *eur
+              secondary: Seizoen
+              icon: mdi:piggy-bank-outline
+              layout: vertical
+              icon_color: *eurkleur
+              tap_action:
+                action: more-info
+        - type: custom:mushroom-chips-card
+          alignment: center
+          chips:
+            - type: template
+              entity: sensor.besparing_warmtepomp_seizoen
+              icon: mdi:fire-off
+              content: >
+                {{ state_attr(entity, 'vermeden_gas_m3') | float(0) | round(0) | int }} m³ gas vermeden
+            - type: template
+              entity: sensor.besparing_warmtepomp_seizoen
+              icon: mdi:flash
+              content: >
+                {{ state_attr(entity, 'stroom_kwh') | float(0) | round(0) | int }} kWh stroom
+            - type: template
+              entity: sensor.besparing_warmtepomp_totaal
+              icon: mdi:piggy-bank
+              content: >
+                Totaal € {{ ('%.2f' | format(states(entity) | float(0))) | replace('.', ',') }}
+        - type: custom:apexcharts-card
+          experimental:
+            color_threshold: true
+          graph_span: 30d
+          span:
+            end: day
+          header:
+            show: true
+            title: Besparing per dag
+            show_states: false
+          yaxis:
+            - decimals: 2
+              apex_config:
+                title:
+                  text: EUR
+          series:
+            - entity: sensor.besparing_warmtepomp_totaal
+              name: Besparing
+              type: column
+              color: "#43a047"
+              statistics:
+                type: change
+                period: day
+              color_threshold:
+                - value: -1000
+                  color: "#e53935"
+                - value: 0
+                  color: "#43a047"
+        - type: custom:apexcharts-card
+          graph_span: 24h
+          update_interval: 1min
+          header:
+            show: true
+            title: Besparing en COP (24 uur)
+            show_states: false
+          yaxis:
+            - id: eur
+              decimals: 2
+              apex_config:
+                title:
+                  text: €/u
+            - id: cop
+              opposite: true
+              min: 0
+              max: 8
+              decimals: 1
+              apex_config:
+                title:
+                  text: COP
+          series:
+            - entity: sensor.besparing_warmtepomp_nu
+              name: Besparing
+              yaxis_id: eur
+              type: area
+              opacity: 0.3
+              stroke_width: 1
+              color: "#43a047"
+              group_by: *avg5
+            - entity: sensor.elga_ace_cop_cop_momentaan
+              name: COP
+              yaxis_id: cop
+              type: line
+              stroke_width: 1
+              color: "#2e7d32"
+              group_by:
+                func: avg
+                duration: 5min
+                fill: "null"
+
+  # ---------- Dag-COP vs buiten ----------
+  - type: custom:apexcharts-card
+    graph_span: 30d
+    span:
+      end: day
+    header:
+      show: true
+      title: Dag-COP vs buitentemperatuur
+      show_states: false
+    all_series_config:
+      offset: -1d
+      statistics:
+        type: mean
+        period: day
+    yaxis:
+      - id: cop
+        min: 0
+        max: 8
+        decimals: 1
+        apex_config:
+          title:
+            text: COP
+      - id: temp
+        opposite: true
+        decimals: 0
+        apex_config:
+          title:
+            text: °C
+    series:
+      - entity: sensor.cop_gemeten_gisteren
+        name: COP gemeten
+        yaxis_id: cop
+        type: column
+        color: "#2e7d32"
+      - entity: sensor.cop_gemeten_netto_gisteren
+        name: COP netto
+        yaxis_id: cop
+        type: column
+        color: "#81c784"
+      - entity: sensor.buitentemperatuur_gisteren
+        name: Buiten (daggem.)
+        yaxis_id: temp
+        type: line
+        stroke_width: 2
+        color: "#1e88e5"
+
+  # ---------- Verwarming per gewogen graaddag ----------
+  - type: vertical-stack
+    cards:
+      - type: custom:mushroom-title-card
+        title: Verwarming per gewogen graaddag
+        subtitle: Gemeten netto warmte (WP + ketel − ontdooien) · stookgrens {{ states('input_number.graaddag_stookgrens') | float(18) | round(1) }} °C
+      - type: horizontal-stack
+        cards:
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.verwarming_per_gewogen_graaddag_gisteren
+            primary: &kwhggd >
+              {% if has_value(entity) %}{{ ('%.1f' | format(states(entity) | float)) | replace('.', ',') }}{% else %}–{% endif %}
+            secondary: kWh/ggd gisteren
+            icon: mdi:home-thermometer
+            layout: vertical
+            icon_color: deep-orange
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.verwarming_per_gewogen_graaddag_deze_maand
+            primary: *kwhggd
+            secondary: kWh/ggd maand
+            icon: mdi:calendar-month
+            layout: vertical
+            icon_color: deep-orange
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.verwarming_per_gewogen_graaddag_seizoen
+            primary: *kwhggd
+            secondary: kWh/ggd seizoen
+            icon: mdi:calendar-range
+            layout: vertical
+            icon_color: deep-orange
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.gewogen_graaddagen_seizoen
+            primary: "{{ states(entity) | float(0) | round(0) | int }}"
+            secondary: ggd seizoen
+            icon: mdi:thermometer-minus
+            layout: vertical
+            icon_color: blue
+            tap_action:
+              action: more-info
+      - type: custom:apexcharts-card
+        graph_span: 30d
+        span:
+          end: day
+        header:
+          show: true
+          title: kWh per gewogen graaddag (30 dagen)
+          show_states: false
+        all_series_config:
+          offset: -1d
+          statistics:
+            type: mean
+            period: day
+        yaxis:
+          - id: kwhggd
+            min: 0
+            decimals: 1
+            apex_config:
+              title:
+                text: kWh/ggd
+          - id: ggd
+            opposite: true
+            min: 0
+            decimals: 0
+            apex_config:
+              title:
+                text: ggd
+        series:
+          - entity: sensor.verwarming_per_gewogen_graaddag_gisteren
+            name: kWh/ggd
+            yaxis_id: kwhggd
+            type: column
+            color: "#ef6c00"
+          - entity: sensor.gewogen_graaddagen_gisteren
+            name: Gewogen graaddagen
+            yaxis_id: ggd
+            type: line
+            stroke_width: 2
+            color: "#1e88e5"
+      - type: custom:apexcharts-card
+        graph_span: 90d
+        span:
+          end: day
+        update_interval: 1h
+        header:
+          show: true
+          title: Warmte vs gewogen graaddagen (90 dagen)
+          show_states: false
+        yaxis:
+          - min: 0
+            decimals: 0
+            apex_config:
+              title:
+                text: Warmte per dag (kWh)
+        apex_config:
+          chart:
+            height: 300
+          xaxis:
+            title:
+              text: Gewogen graaddagen
+            labels:
+              formatter: "EVAL:v => { const e = new Date(); e.setHours(23,59,59,999); return Math.round(25 - (e - v) / 864e5); }"
+          tooltip:
+            x:
+              formatter: "EVAL:v => { const e = new Date(); e.setHours(23,59,59,999); return ((25 - (e - v) / 864e5)).toFixed(1) + ' ggd'; }"
+          markers:
+            size: [4, 0]
+          legend:
+            show: true
+        series:
+          - entity: sensor.verwarming_gisteren
+            name: Dag
+            type: line
+            stroke_width: 0
+            color: "#ffa726"
+            show: &noheader_ggd
+              in_header: false
+              legend_value: false
+            data_generator: |
+              const X = g => new Date(end).getTime() - (25 - g) * 864e5;
+              const ids = ['sensor.gewogen_graaddagen_gisteren','sensor.verwarming_gisteren'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Date.now()-90*864e5).toISOString(), period:'day', statistic_ids:ids, types:['mean']});
+              const g = Object.fromEntries((r[ids[0]]||[]).map(p => [p.start, p.mean]));
+              const pts = [];
+              for (const p of (r[ids[1]]||[])) {
+                const x = g[p.start];
+                if (x == null || p.mean == null || x > 25) continue;
+                pts.push([X(x), +p.mean.toFixed(1)]);
+              }
+              return pts.sort((a, b) => a[0] - b[0]);
+          - entity: sensor.verwarming_gisteren
+            name: Fit
+            type: line
+            stroke_width: 3
+            color: "#00acc1"
+            show: *noheader_ggd
+            data_generator: |
+              const X = g => new Date(end).getTime() - (25 - g) * 864e5;
+              const ids = ['sensor.gewogen_graaddagen_gisteren','sensor.verwarming_gisteren'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Date.now()-90*864e5).toISOString(), period:'day', statistic_ids:ids, types:['mean']});
+              const g = Object.fromEntries((r[ids[0]]||[]).map(p => [p.start, p.mean]));
+              const xs = [], ys = [];
+              for (const p of (r[ids[1]]||[])) {
+                const x = g[p.start];
+                if (x == null || p.mean == null || x < 1 || x > 25) continue;
+                xs.push(x); ys.push(p.mean);
+              }
+              const n = xs.length; if (n < 7) return [];
+              const mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+              let sxy = 0, sxx = 0;
+              xs.forEach((x, i) => { sxy += (x - mx) * (ys[i] - my); sxx += (x - mx) ** 2; });
+              if (sxx === 0) return [];
+              const b = sxy / sxx, a = my - b * mx;
+              return [0, 25].map(x => [X(x), Math.max(0, +(a + b * x).toFixed(1))]);
+
+  # ---------- COP-curve ----------
+  - type: markdown
+    title: COP per buitentemperatuur
+    content: |
+      {%- set c = state_attr('sensor.elga_ace_cop_curve', 'curve') or {} -%}
+      {%- if c | count == 0 -%}
+      Nog geen data. De eerste band verschijnt na middernacht.
+      {%- else -%}
+      {%- set mx = c.values() | map(attribute='cop') | max -%}
+      | Buiten | COP | | Dagen |
+      |:--|--:|:--|--:|
+      {% for band, v in c.items() -%}
+      {%- set kort = band | replace(' tot ', '–') | replace(' °C', '°') -%}
+      {%- set n = ((v.cop / mx) * 10) | round(0) | int -%}
+      | {{ kort }} | **{{ '%.1f' | format(v.cop) }}** | {{ '▰' * n }}{{ '▱' * (10 - n) }} | {{ v.dagen }}{{ '' if v.dagen >= 3 else '*' }} |
+      {% endfor %}
+      {%- endif %}
+
+      <small>{{ states('sensor.elga_ace_cop_per_buitentemperatuur') }} dagen data (gemeten warmte) · * = minder dan 3 dagen, indicatief</small>
+    card_mod:
+      style:
+        ha-markdown$: |
+          table {
+            width: 100%;
+          }
+          th:nth-child(3), td:nth-child(3) {
+            width: 100%;
+          }
+
+  # ---------- Hybride aandeel ----------
+  - type: horizontal-stack
+    cards:
+      - type: gauge
+        entity: sensor.hybride_aandeel_gemeten_gisteren
+        name: WP gisteren
+        min: 0
+        max: 100
+        severity: &aandeel
+          green: 80
+          yellow: 50
+          red: 0
+      - type: gauge
+        entity: sensor.hybride_aandeel_gemeten_deze_maand
+        name: WP maand
+        min: 0
+        max: 100
+        severity: *aandeel
+      - type: gauge
+        entity: sensor.hybride_aandeel_gemeten_seizoen
+        name: WP seizoen
+        min: 0
+        max: 100
+        severity: *aandeel
+
+  # ---------- Energie per dag ----------
+  - type: custom:apexcharts-card
+    graph_span: 30d
+    span:
+      end: day
+    header:
+      show: true
+      title: Energie per dag
+      show_states: false
+    all_series_config:
+      type: column
+      statistics:
+        type: change
+        period: day
+    yaxis:
+      - id: kwh
+        min: 0
+        decimals: 0
+        apex_config:
+          title:
+            text: kWh
+      - id: m3
+        opposite: true
+        min: 0
+        decimals: 1
+        apex_config:
+          title:
+            text: m³
+    series:
+      - entity: sensor.wp_warmte_gemeten_dag
+        name: WP warmte
+        yaxis_id: kwh
+        color: "#ef6c00"
+      - entity: sensor.cv_warmte_gemeten_dag
+        name: Ketel warmte
+        yaxis_id: kwh
+        color: "#ab47bc"
+      - entity: sensor.wp_stroom_dag
+        name: WP stroom
+        yaxis_id: kwh
+        color: "#fbc02d"
+      - entity: sensor.cv_gas_p1_dag
+        name: CV gas
+        yaxis_id: m3
+        color: "#6a1b9a"
+
+  # ---------- Gas: warm water en cv ----------
+  - type: vertical-stack
+    cards:
+      - type: custom:mushroom-title-card
+        title: Gas – warm water en cv
+        subtitle: P1-gas verdeeld op brandertijd (Tzerra-stekker) en debiet ketellus
+      - type: custom:mushroom-chips-card
+        alignment: center
+        chips:
+          - type: template
+            entity: binary_sensor.tzerra_brander
+            icon: >
+              {{ 'mdi:fire-off' if is_state(entity, 'off') else
+                 'mdi:radiator' if states('sensor.tzerra_cv_actief') | int(0) == 1 else 'mdi:shower-head' }}
+            icon_color: >
+              {{ 'grey' if is_state(entity, 'off') else
+                 'purple' if states('sensor.tzerra_cv_actief') | int(0) == 1 else 'blue' }}
+            content: >
+              Tzerra {{ 'uit' if is_state(entity, 'off') else
+                        'cv' if states('sensor.tzerra_cv_actief') | int(0) == 1 else 'warm water' }}
+          - type: template
+            icon: mdi:power-plug
+            content: "{{ states('sensor.cv_power') | float(0) | round(0) }} W"
+      - type: horizontal-stack
+        cards:
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.gas_warm_water_dag
+            primary: "{{ ('%.2f' | format(states(entity) | float(0))) | replace('.', ',') }} m³"
+            secondary: Warm water vandaag
+            icon: mdi:shower-head
+            layout: vertical
+            icon_color: blue
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.gas_warm_water_maand
+            primary: "{{ ('%.1f' | format(states(entity) | float(0))) | replace('.', ',') }} m³"
+            secondary: Warm water maand
+            icon: mdi:calendar-month
+            layout: vertical
+            icon_color: blue
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.kosten_warm_water_maand
+            primary: "{% if has_value(entity) %}€ {{ ('%.2f' | format(states(entity) | float)) | replace('.', ',') }}{% else %}–{% endif %}"
+            secondary: Kosten maand
+            icon: mdi:cash
+            layout: vertical
+            icon_color: amber
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.aandeel_warm_water_in_gas_deze_maand
+            primary: "{{ states(entity) if has_value(entity) else '–' }} %"
+            secondary: Aandeel warm water
+            icon: mdi:chart-pie
+            layout: vertical
+            icon_color: blue
+            tap_action:
+              action: more-info
+      - type: custom:apexcharts-card
+        graph_span: 30d
+        span:
+          end: day
+        stacked: true
+        header:
+          show: true
+          title: Gas per dag – warm water en cv
+          show_states: false
+        all_series_config:
+          type: column
+          statistics:
+            type: change
+            period: day
+        yaxis:
+          - min: 0
+            decimals: 1
+            apex_config:
+              title:
+                text: m³
+        series:
+          - entity: sensor.gas_warm_water
+            name: Warm water
+            color: "#1e88e5"
+          - entity: sensor.gas_cv
+            name: CV
+            color: "#8e24aa"
+
+  # ---------- Aandeel WP per dag ----------
+  - type: custom:apexcharts-card
+    graph_span: 30d
+    span:
+      end: day
+    header:
+      show: true
+      title: Aandeel warmtepomp per dag
+      show_states: false
+    all_series_config:
+      offset: -1d
+      statistics:
+        type: mean
+        period: day
+    yaxis:
+      - min: 0
+        max: 100
+        decimals: 0
+    series:
+      - entity: sensor.hybride_aandeel_gemeten_gisteren
+        name: Aandeel WP
+        type: area
+        color: "#43a047"
+
+  # ---------- Tellers ----------
+  - type: glance
+    title: Deze maand
+    columns: 4
+    entities:
+      - entity: sensor.wp_warmte_gemeten_maand
+        name: WP warmte
+      - entity: sensor.cv_warmte_gemeten_maand
+        name: Ketel warmte
+      - entity: sensor.wp_stroom_maand
+        name: WP stroom
+      - entity: sensor.cv_gas_p1_maand
+        name: CV gas
+  - type: glance
+    title: Stookseizoen (vanaf 1 sept)
+    columns: 4
+    entities:
+      - entity: sensor.wp_warmte_gemeten_seizoen
+        name: WP warmte
+      - entity: sensor.cv_warmte_gemeten_seizoen
+        name: Ketel warmte
+      - entity: sensor.wp_stroom_seizoen
+        name: WP stroom
+      - entity: sensor.cv_gas_p1_seizoen
+        name: CV gas
+
+  # ---------- Instellingen en diagnose ----------
+  - type: entities
+    title: Instellingen en diagnose
+    state_color: true
+    entities:
+      - entity: input_number.stroomprijs_huidig_tarief
+        name: Stroomprijs
+      - entity: input_number.gasprijs_per_m3
+        name: Gasprijs
+      - entity: input_number.gas_calorische_waarde
+      - entity: input_number.cv_rendement
+      - entity: sensor.elga_ace_cop_per_buitentemperatuur
+        name: Dagen in COP-curve
+      - entity: input_button.reset_cop_banden
+        name: Reset COP-curve
+      - type: section
+        label: COP-meter (ESPHome)
+      - entity: binary_sensor.elga_ace_cop_status
+        name: Status
+      - entity: sensor.elga_ace_cop_wifi_signaal
+        name: Wifi-signaal
+      - entity: sensor.elga_ace_cop_debiet_totaal
+        name: Totaal doorgestroomd vloer (7)
+      - entity: sensor.elga_ace_cop_debiet_ketellus_totaal
+        name: Totaal doorgestroomd ketellus (5)
+      - entity: sensor.elga_ace_cop_uptime
+        name: Uptime
+      - entity: button.elga_ace_cop_herstart
+        name: Herstart COP-meter
+
+  # ---------- Stooklijn & analyse ----------
+  - type: vertical-stack
+    title: Stooklijn & analyse
+    cards:
+      - type: horizontal-stack
+        cards:
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.hele_huis_heating_curve_slope
+            primary: "{{ states(entity) | replace('.', ',') }}"
+            secondary: Helling
+            icon: mdi:chart-line-variant
+            layout: vertical
+            icon_color: deep-orange
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.hele_huis_heating_curve_base_setpoint
+            primary: "{{ states(entity) | float(0) | round(0) }} °C"
+            secondary: Basis
+            icon: mdi:format-vertical-align-bottom
+            layout: vertical
+            icon_color: amber
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: sensor.hele_huis_maximum_flow_temperature
+            primary: "{{ states(entity) | float(0) | round(0) }} °C"
+            secondary: Max aanvoer
+            icon: mdi:format-vertical-align-top
+            layout: vertical
+            icon_color: red
+            tap_action:
+              action: more-info
+          - type: custom:mushroom-legacy-template-card
+            entity: climate.hele_huis
+            primary: |
+              {% set d = state_attr(entity, 'current_temperature') | float(0)
+                 - state_attr(entity, 'temperature') | float(0) %}
+              {{ '%+.1f' | format(d) | replace('.', ',') }} °C
+            secondary: Binnen vs doel
+            icon: mdi:home-thermometer
+            layout: vertical
+            icon_color: |
+              {% set d = (state_attr(entity, 'current_temperature') | float(0)
+                 - state_attr(entity, 'temperature') | float(0)) | abs %}
+              {{ 'green' if d <= 0.5 else 'orange' if d <= 1 else 'red' }}
+            tap_action:
+              action: more-info
+      - type: custom:mushroom-chips-card
+        alignment: center
+        chips:
+          - type: template
+            icon: mdi:thermometer
+            content: Buiten {{ states('sensor.remeha_heatpump_outdoor_temperature') | float(0) | round(0) }} °C
+          - type: template
+            icon: mdi:thermometer-chevron-up
+            content: >
+              {% set t4 = 'sensor.elga_ace_cop_t4_aanvoer_vloer' %}
+              {% set t = t4 if has_value(t4) else 'sensor.elga_ace_cop_t3_aanvoer' %}
+              Aanvoer {{ states(t) | float(0) | round(1) | replace('.', ',') }} °C{{ '' if has_value(t4) else ' (T3)' }}
+          - type: template
+            icon: mdi:home-thermometer-outline
+            content: Binnen {{ state_attr('climate.hele_huis', 'current_temperature') }} °C
+      - type: custom:apexcharts-card
+        graph_span: 30d
+        span:
+          end: day
+        update_interval: 15min
+        header:
+          show: true
+          title: Aanvoer vs buiten (alleen WP, 30 dagen)
+          show_states: false
+        yaxis:
+          - min: 15
+            max: 50
+            decimals: 0
+            apex_config:
+              title:
+                text: Aanvoer (°C)
+        apex_config:
+          chart:
+            height: 320
+          xaxis:
+            title:
+              text: Buitentemperatuur (°C)
+            labels:
+              formatter: &xfmt "EVAL:v => { const e = new Date(); e.setHours(23,59,59,999); return Math.round(20 - (e - v) / 864e5) + '°'; }"
+          tooltip:
+            x:
+              formatter: &tfmt "EVAL:v => { const e = new Date(); e.setHours(23,59,59,999); return 'Buiten ' + Math.round(20 - (e - v) / 864e5) + ' °C'; }"
+          markers:
+            size: [4, 0]
+          legend:
+            show: true
+        series:
+          - entity: sensor.remeha_heatpump_outdoor_temperature
+            name: Gemeten uur
+            type: line
+            stroke_width: 0
+            color: "#26a69a"
+            show: &noheader
+              in_header: false
+              legend_value: false
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.elga_ace_cop_t4_aanvoer_vloer','sensor.elga_ace_cop_t3_aanvoer','sensor.elga_ace_cop_warmtepomp_thermisch_vermogen','sensor.elga_ace_cop_ketel_thermisch_vermogen'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Math.max(Date.now()-30*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString(), period:'hour', statistic_ids:ids, types:['mean']});
+              const m = id => Object.fromEntries((r[id]||[]).map(p => [p.start, p.mean]));
+              const [buiten, t4, t3, wp, ketel] = ids.map(m);
+              const pts = [];
+              for (const t in buiten) {
+                const flow = t4[t] ?? t3[t];
+                if ((wp[t] ?? 0) >= 0.3 && (ketel[t] ?? 0) < 0.05 && flow != null) pts.push([X(buiten[t]), +flow.toFixed(1)]);
+              }
+              return pts.sort((a, b) => a[0] - b[0]);
+          - entity: sensor.remeha_heatpump_outdoor_temperature
+            name: Feitelijke stooklijn (fit)
+            type: line
+            stroke_width: 3
+            color: "#ef6c00"
+            show: *noheader
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.elga_ace_cop_t4_aanvoer_vloer','sensor.elga_ace_cop_t3_aanvoer','sensor.elga_ace_cop_warmtepomp_thermisch_vermogen','sensor.elga_ace_cop_ketel_thermisch_vermogen'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Math.max(Date.now()-30*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString(), period:'hour', statistic_ids:ids, types:['mean']});
+              const m = id => Object.fromEntries((r[id]||[]).map(p => [p.start, p.mean]));
+              const [buiten, t4, t3, wp, ketel] = ids.map(m);
+              const xs = [], ys = [];
+              for (const t in buiten) {
+                const flow = t4[t] ?? t3[t];
+                if ((wp[t] ?? 0) >= 0.3 && (ketel[t] ?? 0) < 0.05 && flow != null) { xs.push(buiten[t]); ys.push(flow); }
+              }
+              const n = xs.length; if (n < 10) return [];
+              const mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+              let sxy = 0, sxx = 0;
+              xs.forEach((x, i) => { sxy += (x - mx) * (ys[i] - my); sxx += (x - mx) ** 2; });
+              const b = sxy / sxx, a = my - b * mx;
+              return [-10, 20].map(x => [X(x), +(a + b * x).toFixed(1)]);
+      - type: custom:apexcharts-card
+        graph_span: 30d
+        span:
+          end: day
+        update_interval: 15min
+        header:
+          show: true
+          title: Warmtevraag vs buiten (30 dagen)
+          show_states: false
+        yaxis:
+          - min: 0
+            decimals: 0
+            apex_config:
+              title:
+                text: Warmte (W)
+        apex_config:
+          chart:
+            height: 300
+          xaxis:
+            title:
+              text: Buitentemperatuur (°C)
+            labels:
+              formatter: *xfmt
+          tooltip:
+            x:
+              formatter: *tfmt
+          markers:
+            size: [4, 0]
+          legend:
+            show: true
+        series:
+          - entity: sensor.elga_ace_cop_totaal_thermisch_vermogen
+            name: Uur
+            type: line
+            stroke_width: 0
+            color: "#ffa726"
+            show: *noheader
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.elga_ace_cop_warmtepomp_thermisch_vermogen','sensor.elga_ace_cop_ketel_thermisch_vermogen'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Math.max(Date.now()-30*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString(), period:'hour', statistic_ids:ids, types:['mean']});
+              const m = id => Object.fromEntries((r[id]||[]).map(p => [p.start, p.mean]));
+              const [buiten, wp, ketel] = ids.map(m);
+              const pts = [];
+              for (const t in buiten) {
+                const w = ((wp[t] ?? 0) + (ketel[t] ?? 0)) * 1000;
+                if (w > 50) pts.push([X(buiten[t]), Math.round(w)]);
+              }
+              return pts.sort((a, b) => a[0] - b[0]);
+          - entity: sensor.elga_ace_cop_totaal_thermisch_vermogen
+            name: Fit (W/°C)
+            type: line
+            stroke_width: 3
+            color: "#00acc1"
+            show: *noheader
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.elga_ace_cop_warmtepomp_thermisch_vermogen','sensor.elga_ace_cop_ketel_thermisch_vermogen'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Math.max(Date.now()-30*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString(), period:'hour', statistic_ids:ids, types:['mean']});
+              const m = id => Object.fromEntries((r[id]||[]).map(p => [p.start, p.mean]));
+              const [buiten, wp, ketel] = ids.map(m);
+              const xs = [], ys = [];
+              for (const t in buiten) {
+                const w = ((wp[t] ?? 0) + (ketel[t] ?? 0)) * 1000;
+                if (w > 50) { xs.push(buiten[t]); ys.push(w); }
+              }
+              const n = xs.length; if (n < 10) return [];
+              const mx = xs.reduce((a, b) => a + b) / n, my = ys.reduce((a, b) => a + b) / n;
+              let sxy = 0, sxx = 0;
+              xs.forEach((x, i) => { sxy += (x - mx) * (ys[i] - my); sxx += (x - mx) ** 2; });
+              const b = sxy / sxx, a = my - b * mx;
+              const grens = b < 0 ? Math.min(20, -a / b) : 20;
+              return [[X(-10), Math.round(a - 10 * b)], [X(grens), Math.max(0, Math.round(a + b * grens))]];
+      - type: custom:apexcharts-card
+        graph_span: 30d
+        span:
+          end: day
+        update_interval: 1h
+        stacked: true
+        header:
+          show: true
+          title: Warmte per buitentemperatuur (30 dagen)
+          show_states: false
+        yaxis:
+          - min: 0
+            decimals: 0
+            apex_config:
+              title:
+                text: kWh
+        apex_config:
+          chart:
+            height: 280
+          plotOptions:
+            bar:
+              columnWidth: 80%
+          xaxis:
+            title:
+              text: Buitentemperatuur (°C)
+            labels:
+              formatter: *xfmt
+          tooltip:
+            x:
+              formatter: *tfmt
+          legend:
+            show: true
+        series:
+          - entity: sensor.elga_ace_cop_warmtepomp_warmte
+            name: Warmtepomp
+            type: column
+            color: "#ef6c00"
+            show: *noheader
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.elga_ace_cop_warmtepomp_warmte'];
+              const s = new Date(Math.max(Date.now()-30*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString();
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:s, period:'hour', statistic_ids:ids, types:['mean','change']});
+              const buiten = Object.fromEntries((r[ids[0]]||[]).map(p => [p.start, p.mean]));
+              const bins = {};
+              for (const p of (r[ids[1]]||[])) {
+                const x = buiten[p.start]; if (x == null || !(p.change > 0)) continue;
+                const k = Math.round(x); bins[k] = (bins[k] || 0) + p.change;
+              }
+              return Object.keys(bins).map(Number).sort((a, b) => a - b).map(k => [X(k), +bins[k].toFixed(1)]);
+          - entity: sensor.elga_ace_cop_ketel_warmte
+            name: Ketel
+            type: column
+            color: "#8e24aa"
+            show: *noheader
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.elga_ace_cop_ketel_warmte'];
+              const s = new Date(Math.max(Date.now()-30*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString();
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:s, period:'hour', statistic_ids:ids, types:['mean','change']});
+              const buiten = Object.fromEntries((r[ids[0]]||[]).map(p => [p.start, p.mean]));
+              const bins = {};
+              for (const p of (r[ids[1]]||[])) {
+                const x = buiten[p.start]; if (x == null || !(p.change > 0)) continue;
+                const k = Math.round(x); bins[k] = (bins[k] || 0) + p.change;
+              }
+              return Object.keys(bins).map(Number).sort((a, b) => a - b).map(k => [X(k), +bins[k].toFixed(1)]);
+      - type: custom:apexcharts-card
+        graph_span: 30d
+        span:
+          end: day
+        update_interval: 1h
+        header:
+          show: true
+          title: Onderbroken bedrijf (pendelen, 10 dagen)
+          show_states: false
+        yaxis:
+          - min: 0
+            max: 100
+            decimals: 0
+            apex_config:
+              title:
+                text: "% van draai-uren"
+        apex_config:
+          chart:
+            height: 260
+          plotOptions:
+            bar:
+              columnWidth: 80%
+          xaxis:
+            title:
+              text: Buitentemperatuur (°C)
+            labels:
+              formatter: *xfmt
+          tooltip:
+            x:
+              formatter: *tfmt
+        experimental:
+          color_threshold: true
+        series:
+          - entity: sensor.warmtepomp_power
+            name: Onderbroken
+            type: column
+            color: "#42a5f5"
+            color_threshold:
+              - value: 0
+                color: "#42a5f5"
+              - value: 50
+                color: "#ffa726"
+            show: *noheader
+            data_generator: |
+              const X = T => new Date(end).getTime() - (20 - T) * 864e5;
+              const ids = ['sensor.remeha_heatpump_outdoor_temperature','sensor.warmtepomp_power'];
+              const r = await hass.callWS({type:'recorder/statistics_during_period', start_time:new Date(Math.max(Date.now()-10*864e5, Date.parse('2026-11-17T10:10:00+01:00'))).toISOString(), period:'5minute', statistic_ids:ids, types:['mean']});
+              const uur = t => Math.floor(t / 36e5);
+              const buiten = {}, aan = {}, tot = {};
+              for (const p of (r[ids[0]]||[])) (buiten[uur(p.start)] ??= []).push(p.mean);
+              for (const p of (r[ids[1]]||[])) { const h = uur(p.start); tot[h] = (tot[h] || 0) + 1; if (p.mean > 150) aan[h] = (aan[h] || 0) + 1; }
+              const bins = {};
+              for (const h in tot) {
+                if (!buiten[h] || tot[h] < 10) continue;
+                const f = (aan[h] || 0) / tot[h]; if (f < 0.05) continue;
+                const k = Math.round(buiten[h].reduce((a, b) => a + b) / buiten[h].length);
+                const b = (bins[k] ??= {n: 0, o: 0}); b.n++; if (f < 0.95) b.o++;
+              }
+              return Object.keys(bins).map(Number).sort((a, b) => a - b).map(k => [X(k), Math.round(100 * bins[k].o / bins[k].n)]);

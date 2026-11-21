@@ -1,0 +1,210 @@
+# packages/warmtepomp_cop_vergelijking.yaml
+# Gemeten COP, hybride aandeel, ontdooien en Tzerra-rendement (ESPHome + HomeWizard + P1)
+#
+#  Gemeten COP = warmte ESPHome (flow x ΔT)      / stroom HomeWizard
+#  (De vergelijking met de Remeha-cloud staat in warmtepomp_remeha.yaml.)
+#
+#  Rendement Tzerra = gemeten ketelwarmte (ESPHome) / gas (P1) × calorische waarde
+#
+#  Vereist: warmtepomp_cop.yaml (wp_stroom_*) en warmtepomp_warmwater.yaml (gas_cv_*)
+#           en ESPHome-apparaat "elga-ace-cop".
+
+utility_meter:
+  # Gemeten warmte warmtepomp (ESPHome)
+  wp_warmte_gemeten_dag:
+    unique_id: wp_warmte_gemeten_dag
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+    cycle: daily
+  wp_warmte_gemeten_maand:
+    unique_id: wp_warmte_gemeten_maand
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+    cycle: monthly
+  wp_warmte_gemeten_seizoen:
+    unique_id: wp_warmte_gemeten_seizoen
+    source: sensor.elga_ace_cop_warmtepomp_warmte
+    cron: "0 0 1 9 *"
+  # Gemeten warmte ketel (ESPHome)
+  cv_warmte_gemeten_dag:
+    unique_id: cv_warmte_gemeten_dag
+    source: sensor.elga_ace_cop_ketel_warmte
+    cycle: daily
+  cv_warmte_gemeten_maand:
+    unique_id: cv_warmte_gemeten_maand
+    source: sensor.elga_ace_cop_ketel_warmte
+    cycle: monthly
+  cv_warmte_gemeten_seizoen:
+    unique_id: cv_warmte_gemeten_seizoen
+    source: sensor.elga_ace_cop_ketel_warmte
+    cron: "0 0 1 9 *"
+  # Ontdooien (ESPHome): warmte die de warmtepomp uit het water haalt
+  wp_ontdooi_dag:
+    unique_id: wp_ontdooi_dag
+    source: sensor.elga_ace_cop_ontdooi_warmte
+    cycle: daily
+  wp_ontdooi_maand:
+    unique_id: wp_ontdooi_maand
+    source: sensor.elga_ace_cop_ontdooi_warmte
+    cycle: monthly
+  wp_ontdooi_seizoen:
+    unique_id: wp_ontdooi_seizoen
+    source: sensor.elga_ace_cop_ontdooi_warmte
+    cron: "0 0 1 9 *"
+  wp_ontdooicycli_dag:
+    unique_id: wp_ontdooicycli_dag
+    source: sensor.elga_ace_cop_ontdooicycli
+    cycle: daily
+
+template:
+  # ---------- Lopende perioden ----------
+  - sensor:
+      - name: "COP gemeten deze maand"
+        unique_id: cop_gemeten_maand
+        state_class: measurement
+        icon: mdi:heat-pump
+        state: >
+          {{ (states('sensor.wp_warmte_gemeten_maand') | float(0)
+            / states('sensor.wp_stroom_maand') | float(1)) | round(2) }}
+        availability: >
+          {{ has_value('sensor.wp_warmte_gemeten_maand')
+             and states('sensor.wp_stroom_maand') | float(0) > 5 }}
+
+      - name: "COP gemeten seizoen"
+        unique_id: cop_gemeten_seizoen
+        state_class: measurement
+        icon: mdi:heat-pump
+        state: >
+          {{ (states('sensor.wp_warmte_gemeten_seizoen') | float(0)
+            / states('sensor.wp_stroom_seizoen') | float(1)) | round(2) }}
+        availability: >
+          {{ has_value('sensor.wp_warmte_gemeten_seizoen')
+             and states('sensor.wp_stroom_seizoen') | float(0) > 10 }}
+
+      - name: "Hybride aandeel gemeten deze maand"
+        unique_id: hybride_aandeel_gemeten_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:chart-donut
+        state: >
+          {% set wp = states('sensor.wp_warmte_gemeten_maand') | float(0) %}
+          {% set cv = states('sensor.cv_warmte_gemeten_maand') | float(0) %}
+          {{ (wp / (wp + cv) * 100) | round(1) }}
+        availability: >
+          {{ (states('sensor.wp_warmte_gemeten_maand') | float(0)
+              + states('sensor.cv_warmte_gemeten_maand') | float(0)) > 1 }}
+
+      - name: "Hybride aandeel gemeten seizoen"
+        unique_id: hybride_aandeel_gemeten_seizoen
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:chart-donut
+        state: >
+          {% set wp = states('sensor.wp_warmte_gemeten_seizoen') | float(0) %}
+          {% set cv = states('sensor.cv_warmte_gemeten_seizoen') | float(0) %}
+          {{ (wp / (wp + cv) * 100) | round(1) }}
+        availability: >
+          {{ (states('sensor.wp_warmte_gemeten_seizoen') | float(0)
+              + states('sensor.cv_warmte_gemeten_seizoen') | float(0)) > 1 }}
+
+      # Gemeten cv-rendement van de Tzerra: ketelwarmte (flow × ΔT) / cv-gas.
+      # cv-gas = P1-gas zonder warm water (zie warmtepomp_warmwater.yaml).
+      - name: "Rendement Tzerra deze maand"
+        unique_id: rendement_tzerra_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:water-boiler
+        state: >
+          {{ (states('sensor.cv_warmte_gemeten_maand') | float(0)
+              / (states('sensor.gas_cv_maand') | float(1)
+                 * states('input_number.gas_calorische_waarde') | float(9.77)) * 100) | round(1) }}
+        availability: >
+          {{ has_value('sensor.cv_warmte_gemeten_maand')
+             and states('sensor.gas_cv_maand') | float(0) > 0.5 }}
+
+      # Ontdooiverlies: deel van de geleverde warmte dat terug de buitenunit in ging
+      - name: "Ontdooiverlies deze maand"
+        unique_id: ontdooiverlies_maand
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:snowflake-melt
+        state: >
+          {{ (states('sensor.wp_ontdooi_maand') | float(0)
+              / states('sensor.wp_warmte_gemeten_maand') | float(1) * 100) | round(1) }}
+        availability: >
+          {{ has_value('sensor.wp_ontdooi_maand')
+             and states('sensor.wp_warmte_gemeten_maand') | float(0) > 5 }}
+
+      # COP na aftrek van de ontdooiwarmte (eerlijkste COP)
+      - name: "COP gemeten netto deze maand"
+        unique_id: cop_gemeten_netto_maand
+        state_class: measurement
+        icon: mdi:heat-pump
+        state: >
+          {{ ((states('sensor.wp_warmte_gemeten_maand') | float(0)
+               - states('sensor.wp_ontdooi_maand') | float(0))
+              / states('sensor.wp_stroom_maand') | float(1)) | round(2) }}
+        availability: >
+          {{ has_value('sensor.wp_warmte_gemeten_maand') and has_value('sensor.wp_ontdooi_maand')
+             and states('sensor.wp_stroom_maand') | float(0) > 5 }}
+
+  # ---------- Afgesloten dag (00:01), vastgelegd in langetermijnstatistiek ----------
+  - triggers:
+      - trigger: time
+        at: "00:01:00"
+    variables:
+      wg: "{{ state_attr('sensor.wp_warmte_gemeten_dag', 'last_period') | float(0) }}"
+      cg: "{{ state_attr('sensor.cv_warmte_gemeten_dag', 'last_period') | float(0) }}"
+      eh: "{{ state_attr('sensor.wp_stroom_dag', 'last_period') | float(0) }}"
+      gp: "{{ state_attr('sensor.gas_cv_dag', 'last_period') | float(0) }}"
+      cal: "{{ states('input_number.gas_calorische_waarde') | float(9.77) }}"
+      od: "{{ state_attr('sensor.wp_ontdooi_dag', 'last_period') | float(0) }}"
+      oc: "{{ state_attr('sensor.wp_ontdooicycli_dag', 'last_period') | float(0) }}"
+      cop_g: "{{ (wg / eh) | round(2) if eh > 1 and wg > 0 else none }}"
+    sensor:
+      - name: "COP gemeten gisteren"
+        unique_id: cop_gemeten_gisteren
+        state_class: measurement
+        icon: mdi:heat-pump
+        state: "{{ cop_g }}"
+        attributes:
+          warmte_kwh: "{{ wg | round(2) }}"
+          stroom_kwh: "{{ eh | round(2) }}"
+          dag: "{{ (now() - timedelta(days=1)).date() | string }}"
+
+      - name: "Hybride aandeel gemeten gisteren"
+        unique_id: hybride_aandeel_gemeten_gisteren
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:chart-donut
+        state: "{{ (wg / (wg + cg) * 100) | round(1) if (wg + cg) > 1 else none }}"
+
+      - name: "Rendement Tzerra gisteren"
+        unique_id: rendement_tzerra_gisteren
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:water-boiler
+        state: "{{ (cg / (gp * cal) * 100) | round(1) if gp > 0.3 else none }}"
+        attributes:
+          ketelwarmte_kwh: "{{ cg | round(2) }}"
+          gas_m3: "{{ gp | round(3) }}"
+
+      - name: "Ontdooiverlies gisteren"
+        unique_id: ontdooiverlies_gisteren
+        unit_of_measurement: "%"
+        state_class: measurement
+        icon: mdi:snowflake-melt
+        state: "{{ (od / wg * 100) | round(1) if wg > 2 else none }}"
+        attributes:
+          ontdooiwarmte_kwh: "{{ od | round(2) }}"
+          cycli: "{{ oc | int }}"
+
+      - name: "Ontdooicycli gisteren"
+        unique_id: ontdooicycli_gisteren
+        state_class: measurement
+        icon: mdi:counter
+        state: "{{ oc | int }}"
+
+      - name: "COP gemeten netto gisteren"
+        unique_id: cop_gemeten_netto_gisteren
+        state_class: measurement
+        icon: mdi:heat-pump
+        state: "{{ ((wg - od) / eh) | round(2) if eh > 1 and wg > 0 else none }}"

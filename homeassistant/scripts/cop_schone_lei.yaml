@@ -1,0 +1,84 @@
+alias: COP schone lei
+icon: mdi:broom
+mode: single
+sequence:
+  - action: recorder.purge_entities
+    data:
+      keep_days: 0
+      entity_id:
+        - sensor.elga_ace_cop_t1_retour
+        - sensor.elga_ace_cop_t2_warmtepomp_uit
+        - sensor.elga_ace_cop_t3_aanvoer
+        - sensor.elga_ace_cop_t4_aanvoer_vloer
+      entity_globs:
+        - sensor.elga_ace_cop_*
+        - binary_sensor.elga_ace_cop_*
+        - sensor.elga_ace_scop_*
+        - sensor.cop_*
+        - sensor.wp_warmte_*
+        - sensor.wp_stroom_*
+        - sensor.wp_ontdooi*
+        - sensor.ontdooi*
+        - sensor.rendement_tzerra_*
+        - sensor.cv_warmte_gemeten_*
+        - sensor.cv_gas_*
+        - sensor.*_afwijking_remeha_*
+        - sensor.besparing_*
+        - sensor.remeha_vergelijking_*
+        - sensor.gas_warm_water*
+        - sensor.gas_cv*
+        - sensor.kosten_warm_water_*
+        - sensor.aandeel_warm_water_*
+        - sensor.hybride_aandeel_gemeten_*
+        - sensor.gewogen_graaddagen_*
+        - sensor.verwarming_gisteren
+        - sensor.verwarming_per_gewogen_graaddag_*
+  - action: utility_meter.reset
+    continue_on_error: true
+    target:
+      entity_id:
+        - sensor.wp_warmte_gemeten_dag
+        - sensor.wp_warmte_gemeten_maand
+        - sensor.wp_warmte_gemeten_seizoen
+        - sensor.cv_warmte_gemeten_dag
+        - sensor.cv_warmte_gemeten_maand
+        - sensor.cv_warmte_gemeten_seizoen
+        - sensor.wp_ontdooi_dag
+        - sensor.wp_ontdooi_maand
+        - sensor.wp_ontdooi_seizoen
+        - sensor.wp_ontdooicycli_dag
+        - sensor.wp_stroom_dag
+        - sensor.wp_stroom_maand
+        - sensor.wp_stroom_seizoen
+        - sensor.cv_gas_p1_dag
+        - sensor.cv_gas_p1_maand
+        - sensor.cv_gas_p1_seizoen
+        - sensor.gas_warm_water_dag
+        - sensor.gas_warm_water_maand
+        - sensor.gas_warm_water_seizoen
+        - sensor.gas_cv_dag
+        - sensor.gas_cv_maand
+        - sensor.gas_cv_seizoen
+        - sensor.besparing_wp_warmte_dag
+        - sensor.besparing_wp_warmte_maand
+        - sensor.besparing_wp_warmte_seizoen
+        - sensor.besparing_wp_warmte_totaal
+        - sensor.besparing_wp_ontdooi_dag
+        - sensor.besparing_wp_ontdooi_maand
+        - sensor.besparing_wp_ontdooi_seizoen
+        - sensor.besparing_wp_ontdooi_totaal
+        - sensor.besparing_wp_stroom_dag
+        - sensor.besparing_wp_stroom_maand
+        - sensor.besparing_wp_stroom_seizoen
+        - sensor.besparing_wp_stroom_totaal
+  - action: input_button.press
+    continue_on_error: true
+    target:
+      entity_id:
+        - input_button.reset_cop_banden
+        - input_button.reset_graaddagen
+        - input_button.reset_besparing
+  - action: button.press
+    continue_on_error: true
+    target:
+      entity_id: button.elga_ace_cop_herstart

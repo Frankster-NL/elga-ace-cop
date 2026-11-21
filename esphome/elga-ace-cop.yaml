@@ -1,0 +1,530 @@
+# =====================================================================
+#  Elga Ace COP-meter
+#  Seeit ESP32-DEV-38U(E) + 4x Adafruit MAX31865 PT1000 (ADA-3648)
+#  + 2x YF-B6 flowmeter (G3/4", messing)
+#
+#  Bedrading
+#    SPI (gedeeld)  CLK GPIO18 · SDO/MISO GPIO19 · SDI/MOSI GPIO23
+#    CS             T1 GPIO25 · T2 GPIO17 · T3 GPIO16 · T4 GPIO26
+#    Flowmeter 7    (nieuwe meter, kal. 15-11)  rood 5V · zwart GND
+#                   geel via 51k → GPIO35 (P35), 100k van GPIO35 naar GND
+#    Flowmeter 5    (oude meter, kal. 06-11)    rood 5V · zwart GND
+#                   geel via 51k → GPIO34 (P34), 100k van GPIO34 naar GND
+#    Kalibratie hoort bij de fysieke meter (= bij de GPIO), niet bij de leiding.
+#
+#  Hydrauliek: de Elga Ace-binnenunit is het knooppunt.
+#    7 = retour vanaf de vloer (Elga in)     8 = aanvoer naar de vloer (Elga uit)
+#    5 = Elga → retour Tzerra                6 = aanvoer Tzerra → Elga
+#
+#  Meetpunten
+#    Flowmeter 7 + T1 = leiding 7 (retour vloer)  → al het water door de Elga Ace
+#    T4               = leiding 8 (aanvoer vloer)
+#    Flowmeter 5 + T2 = leiding 5 (naar de Tzerra) → alleen als de ketellus loopt
+#    T3               = leiding 6 (van de Tzerra)
+#
+#  Rekenwijze (energiebalans, klopt ook bij interne menging/recirculatie)
+#    Totaal   = q7 × cp × (T4 − T1)
+#    Ketel    = q5 × cp × (T3 − T2)                 (0 als de ketellus stilstaat)
+#    WP netto = totaal − ketel
+#      > 0  → warmtepomp levert warmte
+#      < 0  → ontdooien (alleen als de warmtepomp > 150 W verbruikt)
+# =====================================================================
+
+substitutions:
+  name: elga-ace-cop
+  friendly_name: Elga Ace COP
+  # Warmtecapaciteit water rond 35 °C in kJ per liter per kelvin
+  cp_water: "4.15"
+  # Entiteit in Home Assistant met het elektrisch vermogen van de warmtepomp (W)
+  ha_power_entity: sensor.warmtepomp_power
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  comment: Debiet, temperaturen en momentane COP van de Elga Ace
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+    advanced:
+      minimum_chip_revision: "3.1"
+      sram1_as_iram: true
+
+logger:
+
+api:
+  encryption:
+    key: !secret elga_ace_api_key
+
+ota:
+  - platform: esphome
+    encryption:           # gebruikt dezelfde sleutel als de api
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: Elga-Ace-COP Fallback
+    password: !secret elga_ace_fallback_password
+
+captive_portal:
+
+globals:
+  - id: ontdooi_aantal
+    type: int
+    restore_value: true
+    initial_value: "0"
+  - id: ontdooi_start_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+spi:
+  clk_pin: GPIO18
+  miso_pin: GPIO19
+  mosi_pin: GPIO23
+
+sensor:
+  # -------------------------------------------------------------------
+  #  Debiet leiding 7 (YF-B6, nieuwe meter) op GPIO35 – retour vloer
+  #  Softwaretelling (use_pcnt: false), dalende flank, 2 ms debounce.
+  #  pulse_counter levert pulsen/min; omrekening naar L/min is
+  #  debietafhankelijk, bepaald met gewogen emmertests 15-11-2026:
+  #    1964 p/min -> 5,20 L/min · 4087 p/min -> 9,96 L/min
+  #    4780 p/min -> 11,47 L/min (gemiddelde van 2 tests, 0,6% spreiding)
+  #  Buiten 11,5 L/min wordt het laatste segment doorgetrokken.
+  # -------------------------------------------------------------------
+  - platform: pulse_counter
+    id: debiet
+    name: Debiet
+    pin:
+      number: GPIO35
+      mode: INPUT            # externe deler 51k/100k; GPIO35 heeft geen interne pull-up
+    use_pcnt: false
+    internal_filter: 2ms
+    count_mode:
+      rising_edge: DISABLE
+      falling_edge: INCREMENT
+    update_interval: 10s
+    unit_of_measurement: L/min
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:waves-arrow-right
+    filters:
+      - calibrate_linear:
+          method: exact
+          datapoints:
+            - 0.0 -> 0.0          # pulsen/min -> L/min
+            - 1964.0 -> 5.20
+            - 4087.0 -> 9.96
+            - 4780.0 -> 11.47
+      - lambda: "return x < 0.0f ? 0.0f : x;"
+
+  # Totaal doorgestroomd, uit het gekalibreerde debiet; blijft bewaard na herstart
+  - platform: integration
+    id: debiet_totaal
+    name: Debiet totaal
+    sensor: debiet
+    time_unit: min
+    integration_method: trapezoid
+    restore: true
+    unit_of_measurement: L
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 1
+
+  # -------------------------------------------------------------------
+  #  Debiet leiding 5 (YF-B6, oude meter) op GPIO34 – naar de Tzerra
+  #  Gekalibreerd met gewogen emmertests 06-11-2026:
+  #    meter (396 p/L)  3,08 L/min → werkelijk  3,65  (12,4 L)
+  #    meter (396 p/L)  6,00 L/min → werkelijk  6,27  (14,8 kg)
+  #    meter (396 p/L) 10,98 L/min → werkelijk 10,62  (16,0 kg)
+  #    meter (396 p/L) 12,72 L/min → werkelijk 12,00  (14,6 kg)
+  # -------------------------------------------------------------------
+  - platform: pulse_counter
+    id: debiet_ketel
+    name: Debiet ketellus
+    pin:
+      number: GPIO34
+      mode: INPUT            # externe deler 51k/100k; GPIO34 heeft geen interne pull-up
+    use_pcnt: false
+    internal_filter: 2ms
+    count_mode:
+      rising_edge: DISABLE
+      falling_edge: INCREMENT
+    update_interval: 10s
+    unit_of_measurement: L/min
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:waves-arrow-right
+    filters:
+      - calibrate_linear:
+          method: exact
+          datapoints:
+            - 0.0 -> 0.0          # pulsen/min -> L/min
+            - 1220.0 -> 3.65
+            - 2376.0 -> 6.27
+            - 4348.0 -> 10.62
+            - 5037.0 -> 12.00
+      - lambda: "return x < 0.0f ? 0.0f : x;"
+
+  - platform: integration
+    id: debiet_ketel_totaal
+    name: Debiet ketellus totaal
+    sensor: debiet_ketel
+    time_unit: min
+    integration_method: trapezoid
+    restore: true
+    unit_of_measurement: L
+    device_class: water
+    state_class: total_increasing
+    accuracy_decimals: 1
+
+  # -------------------------------------------------------------------
+  #  Temperaturen (PT1000, 2-draads)
+  #  Kalibratie 05-11-2026, ijsbad (crushed ijs, voelers samengebonden),
+  #  stabiele periode 14:28:40–14:31:50, tijdgewogen gemiddelde:
+  #    T1 0,152 °C · T2 0,178 °C · T3 0,119 °C  (referentie 0,00 °C)
+  #  offset = werkelijk − gemeten → T1 −0,15 · T2 −0,18 · T3 −0,12
+  #  Controle (met offsets, afwijking t.o.v. gemiddelde van de drie):
+  #    ijsbad   T1 +0,01 · T2 +0,00 · T3 +0,01 °C t.o.v. 0,00 °C
+  #    35 °C    T1 −0,009 · T2 +0,004 · T3 +0,005 K
+  #    50 °C    T1 +0,010 · T2 −0,028 · T3 +0,019 K
+  #  Geen systematische helling → geen calibrate_linear nodig.
+  # -------------------------------------------------------------------
+  - platform: max31865
+    id: t1_retour
+    name: T1 retour
+    cs_pin: GPIO25
+    reference_resistance: 4300 Ω
+    rtd_nominal_resistance: 1000 Ω
+    rtd_wires: 2
+    mains_filter: 50Hz
+    update_interval: 5s
+    filters:
+      - offset: -0.15
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 2
+
+  - platform: max31865
+    id: t2_tussen
+    name: T2 warmtepomp uit
+    cs_pin: GPIO17
+    reference_resistance: 4300 Ω
+    rtd_nominal_resistance: 1000 Ω
+    rtd_wires: 2
+    mains_filter: 50Hz
+    update_interval: 5s
+    filters:
+      - offset: -0.18
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 2
+
+  - platform: max31865
+    id: t3_aanvoer
+    name: T3 aanvoer
+    cs_pin: GPIO16
+    reference_resistance: 4300 Ω
+    rtd_nominal_resistance: 1000 Ω
+    rtd_wires: 2
+    mains_filter: 50Hz
+    update_interval: 5s
+    filters:
+      - offset: -0.12
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 2
+
+  # T4: voeler op leiding 8 (aanvoer vloer).
+  # Ijsbad 17-11-2026: gemeten +0,132 °C → offset −0,13.
+  # (Zelfde ijsbad: T1 −0,009 · T2 −0,022 · T3 −0,014 met bestaande offsets → ongewijzigd.)
+  - platform: max31865
+    id: t4_aanvoer_vloer
+    name: T4 aanvoer vloer
+    cs_pin: GPIO26
+    reference_resistance: 4300 Ω
+    rtd_nominal_resistance: 1000 Ω
+    rtd_wires: 2
+    mains_filter: 50Hz
+    update_interval: 5s
+    filters:
+      - offset: -0.13
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 2
+
+  # -------------------------------------------------------------------
+  #  Elektrisch vermogen warmtepomp uit Home Assistant (HomeWizard)
+  # -------------------------------------------------------------------
+  - platform: homeassistant
+    id: wp_elektrisch
+    entity_id: ${ha_power_entity}
+    internal: true
+
+  # -------------------------------------------------------------------
+  #  Temperatuurverschillen
+  # -------------------------------------------------------------------
+  - platform: template
+    id: dt_wp
+    name: Delta T warmtepomp
+    unit_of_measurement: K
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+    lambda: |-
+      const float uit = id(ketellus_actief).state ? id(t2_tussen).state : id(t4_aanvoer_vloer).state;
+      return uit - id(t1_retour).state;
+
+  - platform: template
+    id: dt_cv
+    name: Delta T ketel
+    unit_of_measurement: K
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:thermometer-chevron-up
+    update_interval: 10s
+    lambda: |-
+      if (!id(ketellus_actief).state) return 0.0f;
+      return id(t3_aanvoer).state - id(t2_tussen).state;
+
+  # -------------------------------------------------------------------
+  #  Thermisch vermogen  P (kW) = debiet (L/min) / 60 × cp × ΔT
+  #  Drempels tegen ruis: debiet ≥ 1 L/min, ΔT ≥ 0,3 K, netto ≥ 0,25 kW
+  # -------------------------------------------------------------------
+  - platform: template
+    id: totaal_thermisch
+    name: Totaal thermisch vermogen
+    unit_of_measurement: kW
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 10s
+    lambda: |-
+      const float q  = id(debiet).state;
+      const float dt = id(t4_aanvoer_vloer).state - id(t1_retour).state;
+      if (std::isnan(q) || std::isnan(dt) || q < 1.0f || dt < 0.3f) return 0.0f;
+      return q / 60.0f * ${cp_water} * dt;
+
+  - platform: template
+    id: cv_thermisch
+    name: Ketel thermisch vermogen
+    unit_of_measurement: kW
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 10s
+    lambda: |-
+      if (!id(ketellus_actief).state) return 0.0f;
+      const float q5 = id(debiet_ketel).state;
+      const float dt = id(t3_aanvoer).state - id(t2_tussen).state;
+      if (std::isnan(q5) || std::isnan(dt) || q5 < 1.0f || dt < 0.3f) return 0.0f;
+      return q5 / 60.0f * ${cp_water} * dt;
+
+  # Netto warmte van de warmtepomp: totaal − ketel (met teken, intern)
+  - platform: template
+    id: wp_netto
+    internal: true
+    unit_of_measurement: kW
+    accuracy_decimals: 2
+    update_interval: 10s
+    lambda: |-
+      const float q7 = id(debiet).state;
+      const float t1 = id(t1_retour).state;
+      const float t4 = id(t4_aanvoer_vloer).state;
+      if (std::isnan(q7) || std::isnan(t1) || std::isnan(t4) || q7 < 1.0f) return 0.0f;
+      const float totaal = q7 / 60.0f * ${cp_water} * (t4 - t1);
+      float ketel = 0.0f;
+      if (id(ketellus_actief).state) {
+        const float q5 = id(debiet_ketel).state;
+        const float dk = id(t3_aanvoer).state - id(t2_tussen).state;
+        if (!std::isnan(q5) && !std::isnan(dk) && q5 >= 1.0f && dk >= 0.3f)
+          ketel = q5 / 60.0f * ${cp_water} * dk;
+      }
+      return totaal - ketel;
+
+  - platform: template
+    id: wp_thermisch
+    name: Warmtepomp thermisch vermogen
+    unit_of_measurement: kW
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 10s
+    lambda: |-
+      const float n = id(wp_netto).state;
+      if (std::isnan(n) || n < 0.25f) return 0.0f;
+      return n;
+
+  # -------------------------------------------------------------------
+  #  Ontdooien: warmte die de warmtepomp uit het cv-water haalt
+  # -------------------------------------------------------------------
+  - platform: template
+    id: ontdooi_thermisch
+    name: Ontdooi vermogen
+    unit_of_measurement: kW
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:snowflake-melt
+    update_interval: 10s
+    lambda: |-
+      const float n  = id(wp_netto).state;
+      const float pe = id(wp_elektrisch).state;
+      if (std::isnan(n) || std::isnan(pe) || pe < 150.0f || n > -0.25f) return 0.0f;
+      return -n;
+
+  - platform: integration
+    id: ontdooi_warmte
+    name: Ontdooi warmte
+    sensor: ontdooi_thermisch
+    time_unit: h
+    integration_method: left
+    restore: true
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+    icon: mdi:snowflake-melt
+
+  - platform: template
+    id: ontdooi_cycli
+    name: Ontdooicycli
+    state_class: total_increasing
+    accuracy_decimals: 0
+    icon: mdi:counter
+    update_interval: 60s
+    lambda: return id(ontdooi_aantal);
+
+  - platform: template
+    id: ontdooi_duur_laatste
+    name: Duur laatste ontdooiing
+    unit_of_measurement: min
+    device_class: duration
+    state_class: measurement
+    accuracy_decimals: 1
+    icon: mdi:timer-sand
+    update_interval: never
+
+  # -------------------------------------------------------------------
+  #  COP en hybride aandeel (momentaan, gemiddeld over 1 minuut)
+  # -------------------------------------------------------------------
+  - platform: template
+    id: cop_momentaan
+    name: COP momentaan
+    state_class: measurement
+    accuracy_decimals: 2
+    icon: mdi:heat-pump
+    update_interval: 10s
+    lambda: |-
+      const float pe  = id(wp_elektrisch).state;
+      const float pth = id(wp_thermisch).state;
+      if (std::isnan(pe) || std::isnan(pth) || pe < 300.0f) return NAN;
+      return pth * 1000.0f / pe;
+    filters:
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 1
+
+  - platform: template
+    id: hybride_aandeel
+    name: Hybride aandeel warmtepomp
+    unit_of_measurement: "%"
+    state_class: measurement
+    accuracy_decimals: 0
+    icon: mdi:chart-donut
+    update_interval: 10s
+    lambda: |-
+      const float wp = id(wp_thermisch).state;
+      const float cv = id(cv_thermisch).state;
+      if (std::isnan(wp) || std::isnan(cv) || (wp + cv) < 0.2f) return NAN;
+      return wp / (wp + cv) * 100.0f;
+    filters:
+      - sliding_window_moving_average:
+          window_size: 6
+          send_every: 1
+
+  # -------------------------------------------------------------------
+  #  Geleverde warmte (kWh), blijft bewaard na herstart
+  # -------------------------------------------------------------------
+  - platform: integration
+    id: wp_warmte
+    name: Warmtepomp warmte
+    sensor: wp_thermisch
+    time_unit: h
+    integration_method: left
+    restore: true
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+
+  - platform: integration
+    id: cv_warmte
+    name: Ketel warmte
+    sensor: cv_thermisch
+    time_unit: h
+    integration_method: left
+    restore: true
+    unit_of_measurement: kWh
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+
+  # -------------------------------------------------------------------
+  #  Diagnose
+  # -------------------------------------------------------------------
+  - platform: wifi_signal
+    name: Wifi-signaal
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: uptime
+    name: Uptime
+    entity_category: diagnostic
+
+binary_sensor:
+  - platform: status
+    name: Status
+
+  # Loopt er water door de ketellus (leiding 5 → Tzerra → leiding 6)?
+  # Direct gemeten met flowmeter 5. 30 s vertraging bij inschakelen,
+  # zodat T2 en T3 eerst het stromende water volgen.
+  - platform: template
+    id: ketellus_actief
+    name: Ketellus actief
+    icon: mdi:water-boiler
+    lambda: |-
+      const float q5 = id(debiet_ketel).state;
+      return !std::isnan(q5) && q5 >= 1.0f;
+    filters:
+      - delayed_on: 30s
+      - delayed_off: 20s
+
+  # Ontdooicyclus bezig: ontdooivermogen > 0,3 kW, minstens 30 s aaneen
+  - platform: template
+    id: ontdooien
+    name: Ontdooien
+    icon: mdi:snowflake-melt
+    lambda: return id(ontdooi_thermisch).state > 0.3f;
+    filters:
+      - delayed_on: 30s
+      - delayed_off: 30s
+    on_press:
+      - lambda: |-
+          id(ontdooi_start_ms) = millis();
+          id(ontdooi_aantal) += 1;
+          id(ontdooi_cycli).publish_state(id(ontdooi_aantal));
+    on_release:
+      - lambda: |-
+          if (id(ontdooi_start_ms) > 0) {
+            id(ontdooi_duur_laatste).publish_state((millis() - id(ontdooi_start_ms)) / 60000.0f);
+          }
+
+button:
+  - platform: restart
+    name: Herstart
+    entity_category: config
