@@ -2,6 +2,8 @@
 
 **🇬🇧 English** · [🇳🇱 Nederlands](README.nl.md)
 
+<img width="1536" height="1024" alt="27C221CB-2495-4541-93AD-E4C08D7254AE" src="https://github.com/Frankster-NL/elga-ace-cop/blob/main/docs/img/27C221CB-2495-4541-93AD-E4C08D7254AE.png" />
+
 Measure the **real** heat output and COP of a Remeha **Elga Ace** hybrid heat pump (with a Remeha Tzerra or similar gas boiler) in Home Assistant, independently of the Remeha cloud.
 
 An ESP32 with two flow meters and four PT1000 sensors measures the heat flowing to the floor heating and the heat added by the boiler. The heat pump's electrical power comes from an energy meter in Home Assistant, such as a HomeWizard socket. Together they give:
