@@ -2,7 +2,7 @@
 
 **🇬🇧 English** · [🇳🇱 Nederlands](README.nl.md)
 
-<img width="1536" height="1024" alt="27C221CB-2495-4541-93AD-E4C08D7254AE" src="https://github.com/Frankster-NL/elga-ace-cop/blob/main/docs/img/27C221CB-2495-4541-93AD-E4C08D7254AE.png" />
+<img width="960"  alt="27C221CB-2495-4541-93AD-E4C08D7254AE" src="https://github.com/Frankster-NL/elga-ace-cop/blob/main/docs/img/27C221CB-2495-4541-93AD-E4C08D7254AE.png" />
 
 Measure the **real** heat output and COP of a Remeha **Elga Ace** hybrid heat pump (with a Remeha Tzerra or similar gas boiler) in Home Assistant, independently of the Remeha cloud.
 
