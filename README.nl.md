@@ -2,6 +2,8 @@
 
 [🇬🇧 English](README.md) · **🇳🇱 Nederlands**
 
+<img width="960"  alt="27C221CB-2495-4541-93AD-E4C08D7254AE" src="https://github.com/Frankster-NL/elga-ace-cop/blob/main/docs/img/27C221CB-2495-4541-93AD-E4C08D7254AE.png" />
+
 Meet de **werkelijke** warmteafgifte en COP van een Remeha **Elga Ace** hybride warmtepomp (met een Remeha Tzerra of vergelijkbare cv-ketel) in Home Assistant, los van de Remeha-cloud.
 
 Een ESP32 met twee flowmeters en vier PT1000-voelers meet hoeveel warmte er naar de vloerverwarming gaat en hoeveel de ketel daaraan toevoegt. Het elektrisch vermogen van de warmtepomp komt uit een energiemeter in Home Assistant, bijvoorbeeld een HomeWizard-stekker. Samen levert dat op:
